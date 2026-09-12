@@ -11637,14 +11637,8 @@ if(document.readyState==='loading'){
     'use strict';
 
     const EXPECTED_HOST = 'chatuchakdatacenter-wq.github.io';
-    const NAMESPACE = 'chatuchakdatacenter-wq.github.io';
-    const API_BASE = 'https://counterapi.com/api/';
-
-    // Page View counter ชุดใหม่: นับทุกการโหลดหน้าเว็บ โดยเริ่มฐานพร้อมกันทั้ง 4 ช่วงเวลา
-    // แยกจาก Unique Visitor เดิม เพื่อไม่ให้ยอดเก่าที่คนละความหมายปะปนกัน
-    const VISITOR_COUNTER_PREFIX = 'dtcp-pageviews-v1-20260912';
-    // แยก Reaction ออกจากสถิติการเข้าชม เพื่อไม่ให้การเปลี่ยนวิธีนับกระทบยอดความคิดเห็นเดิม
-    const REACTION_COUNTER_PREFIX = 'dtcp-v2-20260912';
+    // ใช้ Apps Script เดียวกับระบบข้อมูลเว็บไซต์ เพื่อให้สถิติเป็นข้อมูลกลางจริง
+    const VISITOR_API = 'https://script.google.com/macros/s/AKfycbyhTOS2x9xKLCCWTlXpfYRd1_tysMu2aVge8i9r8ag1Fri3jteaRWkoZx5xVp38D3kd/exec';
 
     const STATUS = document.getElementById('visitorStatsStatus');
     const elToday = document.getElementById('visitorToday');
@@ -11659,90 +11653,93 @@ if(document.readyState==='loading'){
         dislike: document.getElementById('reactionDislikeCount')
     };
     const reactionStatus = document.getElementById('visitorReactionStatus');
-    const reactionStorageKey = 'dtcpWebsiteReactionV1';
+    const reactionStorageKey = 'dtcpWebsiteReactionV2';
+    const clientIdStorageKey = 'dtcpVisitorClientIdV1';
 
     function setValue(el, value){
         if(!el) return;
         el.classList.remove('is-loading','is-error');
-        el.textContent = Number(value || 0).toLocaleString('th-TH');
+        const n = Number(value);
+        el.textContent = Number.isFinite(n) ? n.toLocaleString('th-TH') : '0';
     }
+
     function setUnavailable(message){
         visitorEls.forEach(el=>{
             if(!el) return;
             el.classList.remove('is-loading');
+            el.classList.add('is-error');
             el.textContent='—';
         });
         if(STATUS) STATUS.textContent=message;
     }
-    function datePartsBangkok(){
-        const parts = new Intl.DateTimeFormat('en-CA',{
-            timeZone:'Asia/Bangkok', year:'numeric',month:'2-digit',day:'2-digit'
-        }).formatToParts(new Date()).reduce((a,p)=>{a[p.type]=p.value;return a;},{});
-        return {
-            day:`${parts.year}-${parts.month}-${parts.day}`,
-            month:`${parts.year}-${parts.month}`,
-            year:`${parts.year}`
-        };
-    }
-    async function counterRequest(action,key,params={}){
-        const q = new URLSearchParams({noFormatting:'true',...params});
-        const url = `${API_BASE}${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(action)}/${encodeURIComponent(key)}?${q.toString()}`;
-        const controller = new AbortController();
-        const timer = setTimeout(()=>controller.abort(),5000);
+
+    function getClientId(){
+        let id = localStorage.getItem(clientIdStorageKey);
+        if(id) return id;
         try{
-            const res = await fetch(url,{cache:'no-store',mode:'cors',signal:controller.signal,referrerPolicy:'strict-origin-when-cross-origin'});
+            id = (crypto && crypto.randomUUID) ? crypto.randomUUID() : '';
+        }catch(_){ id=''; }
+        if(!id){
+            id = 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,12);
+        }
+        localStorage.setItem(clientIdStorageKey,id);
+        return id;
+    }
+
+    async function apiCall(action, params={}){
+        const q = new URLSearchParams({
+            action,
+            ...params,
+            _ts: String(Date.now())
+        });
+        const controller = new AbortController();
+        const timer = setTimeout(()=>controller.abort(),8000);
+        try{
+            const res = await fetch(`${VISITOR_API}?${q.toString()}`,{
+                method:'GET',
+                cache:'no-store',
+                mode:'cors',
+                signal:controller.signal,
+                referrerPolicy:'strict-origin-when-cross-origin'
+            });
             if(!res.ok) throw new Error('HTTP '+res.status);
-            return await res.json();
-        } finally { clearTimeout(timer); }
+            const data = await res.json();
+            if(!data || data.ok === false) throw new Error((data && data.error) || 'API error');
+            return data;
+        } finally {
+            clearTimeout(timer);
+        }
     }
-    async function hitVisitor(key){
-        // Page View: นับทุกการโหลดหน้าเว็บ ไม่ใช้ unique=true
-        return counterRequest('view',key);
-    }
-    async function readReaction(name){
-        return counterRequest('vote',`${REACTION_COUNTER_PREFIX}-reaction-${name}`,{readOnly:'true'});
-    }
-    async function voteReaction(name){
-        return counterRequest('vote',`${REACTION_COUNTER_PREFIX}-reaction-${name}`,{behavior:'vote'});
+
+    function renderStats(data){
+        setValue(elToday,data.today);
+        setValue(elMonth,data.month);
+        setValue(elYear,data.year);
+        setValue(elTotal,data.total);
+        if(data.reactions){
+            setValue(reactionEls.heart,data.reactions.heart);
+            setValue(reactionEls.like,data.reactions.like);
+            setValue(reactionEls.dislike,data.reactions.dislike);
+        }
     }
 
     async function loadVisitorStats(){
-        // Local HTML testing must never alter the public counters.
         if(location.protocol !== 'https:' || location.hostname !== EXPECTED_HOST){
-            setUnavailable('โหมดทดสอบ Local — จะเริ่มนับทุกการโหลดเมื่อเผยแพร่บน GitHub Pages');
+            setUnavailable('โหมดทดสอบ Local — ระบบจะนับจริงเมื่อเผยแพร่บน GitHub Pages');
             return;
         }
 
-        // Guard ระดับ document: ป้องกันโค้ดชุดเดียวกันถูก init ซ้ำใน page load เดียว
-        // การ Refresh / ปิดแล้วเปิดใหม่ / เปิดแท็บใหม่ จะเป็น document ใหม่ จึงนับ +1 ตามที่ต้องการ
-        if(window.__dtcpPageViewCounted){
-            if(STATUS) STATUS.textContent='บันทึกการเข้าชมของหน้านี้แล้ว';
-            return;
-        }
+        // ป้องกัน init ซ้ำภายใน document เดียว แต่ Refresh/เปิดใหม่ = document ใหม่ = +1 แน่นอน
+        if(window.__dtcpPageViewCounted) return;
         window.__dtcpPageViewCounted = true;
 
-        const d = datePartsBangkok();
         try{
-            const [today,month,year,total] = await Promise.all([
-                hitVisitor(`${VISITOR_COUNTER_PREFIX}-day-${d.day}`),
-                hitVisitor(`${VISITOR_COUNTER_PREFIX}-month-${d.month}`),
-                hitVisitor(`${VISITOR_COUNTER_PREFIX}-year-${d.year}`),
-                hitVisitor(`${VISITOR_COUNTER_PREFIX}-total`)
-            ]);
-            setValue(elToday,today.value);
-            setValue(elMonth,month.value);
-            setValue(elYear,year.value);
-            setValue(elTotal,total.value);
-            if(STATUS) STATUS.textContent='นับทุกการโหลดหน้าเว็บ · วันนี้ / เดือนนี้ / ปีนี้ / ทั้งหมด · เวลาไทย';
+            const data = await apiCall('visitorPageView',{clientId:getClientId()});
+            renderStats(data);
+            if(STATUS) STATUS.textContent='นับทุกการโหลดหน้าเว็บ · Refresh / เปิดใหม่ / เปิดแท็บใหม่ = +1';
         }catch(err){
-            console.warn('[Visitor Stats] unavailable:',err);
-            visitorEls.forEach(el=>{
-                if(!el) return;
-                el.classList.remove('is-loading');
-                el.classList.add('is-error');
-                el.textContent='ไม่พร้อมใช้งาน';
-            });
-            if(STATUS) STATUS.textContent='ไม่สามารถเชื่อมต่อระบบสถิติได้ในขณะนี้ — หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ';
+            console.warn('[Visitor Stats] Apps Script unavailable:',err);
+            setUnavailable('ระบบสถิติยังเชื่อมต่อ Apps Script ไม่สำเร็จ');
         }
     }
 
@@ -11752,60 +11749,109 @@ if(document.readyState==='loading'){
             btn.classList.toggle('is-selected',isSelected);
             btn.classList.toggle('is-locked',!!selected && !isSelected);
             btn.disabled = !!selected && !isSelected;
+            btn.setAttribute('aria-pressed',isSelected ? 'true' : 'false');
         });
-        if(selected && reactionStatus) reactionStatus.textContent='ขอบคุณสำหรับความคิดเห็นของคุณ';
-    }
-    async function loadReactionCounts(){
-        try{
-            const [heart,like,dislike] = await Promise.all([
-                readReaction('heart'),readReaction('like'),readReaction('dislike')
-            ]);
-            setValue(reactionEls.heart,heart.value);
-            setValue(reactionEls.like,like.value);
-            setValue(reactionEls.dislike,dislike.value);
-        }catch(err){
-            console.warn('[Website Reactions] read unavailable:',err);
-            Object.values(reactionEls).forEach(el=>{if(el) el.textContent='—';});
+        if(selected && reactionStatus){
+            reactionStatus.textContent='ขอบคุณสำหรับความคิดเห็นของคุณ · ระบบจดจำการเลือกนี้แล้ว';
         }
     }
+
+    async function loadReactionCounts(){
+        try{
+            const data = await apiCall('visitorStats',{clientId:getClientId()});
+            if(data.reactions){
+                setValue(reactionEls.heart,data.reactions.heart);
+                setValue(reactionEls.like,data.reactions.like);
+                setValue(reactionEls.dislike,data.reactions.dislike);
+            }
+            // ให้ server เป็นแหล่งยืนยันเพิ่มอีกชั้น ถ้า browser เคยโหวต
+            if(data.selectedReaction && !localStorage.getItem(reactionStorageKey)){
+                localStorage.setItem(reactionStorageKey,data.selectedReaction);
+            }
+            applyReactionLock(localStorage.getItem(reactionStorageKey) || data.selectedReaction || '');
+        }catch(err){
+            console.warn('[Website Reactions] read unavailable:',err);
+            // ถึง API ชั่วคราวล่ม ก็ยังคงสถานะหัวใจ/Like/Dislike ที่ผู้ใช้เคยเลือกไว้
+            applyReactionLock(localStorage.getItem(reactionStorageKey) || '');
+        }
+    }
+
     async function handleReactionClick(event){
         const btn = event.currentTarget;
         const reaction = btn.dataset.reaction;
         if(!reaction) return;
+
         const already = localStorage.getItem(reactionStorageKey);
         if(already){
             applyReactionLock(already);
             return;
         }
+
         if(location.protocol !== 'https:' || location.hostname !== EXPECTED_HOST){
             if(reactionStatus) reactionStatus.textContent='โหมดทดสอบ Local — ยังไม่ส่งคะแนนจริง';
             return;
         }
+
+        // Optimistic UI: เลือกแล้วต้องไม่เด้งหาย แม้ network ใช้เวลาสักครู่
+        const current = Number(String(reactionEls[reaction]?.textContent || '0').replace(/[^0-9]/g,'')) || 0;
+        localStorage.setItem(reactionStorageKey,reaction);
+        localStorage.setItem('dtcpReactionPendingV1',reaction);
+        setValue(reactionEls[reaction],current + 1);
+        applyReactionLock(reaction);
+
         document.querySelectorAll('.visitor-reaction-btn').forEach(b=>b.disabled=true);
         try{
-            const res = await voteReaction(reaction);
-            localStorage.setItem(reactionStorageKey,reaction);
-            setValue(reactionEls[reaction],res.value);
-            applyReactionLock(reaction);
+            const data = await apiCall('visitorReaction',{
+                reaction,
+                clientId:getClientId()
+            });
+            if(data.reactions){
+                setValue(reactionEls.heart,data.reactions.heart);
+                setValue(reactionEls.like,data.reactions.like);
+                setValue(reactionEls.dislike,data.reactions.dislike);
+            }
+            const selected = data.selectedReaction || reaction;
+            localStorage.setItem(reactionStorageKey,selected);
+            localStorage.removeItem('dtcpReactionPendingV1');
+            applyReactionLock(selected);
         }catch(err){
             console.warn('[Website Reactions] vote unavailable:',err);
-            document.querySelectorAll('.visitor-reaction-btn').forEach(b=>b.disabled=false);
-            if(reactionStatus) reactionStatus.textContent='ส่งความคิดเห็นไม่สำเร็จ กรุณาลองใหม่';
+            // ห้ามลบ reaction ที่ผู้ใช้เลือก: เก็บไว้ในเครื่องและลอง sync ใหม่เมื่อเปิดหน้าอีกครั้ง
+            if(reactionStatus) reactionStatus.textContent='บันทึกการเลือกไว้ในเครื่องแล้ว · จะซิงก์อีกครั้งเมื่อระบบออนไลน์';
+            applyReactionLock(reaction);
         }
     }
+
+    async function syncPendingReaction(){
+        const pending = localStorage.getItem('dtcpReactionPendingV1');
+        if(!pending || location.protocol !== 'https:' || location.hostname !== EXPECTED_HOST) return;
+        try{
+            const data = await apiCall('visitorReaction',{reaction:pending,clientId:getClientId()});
+            if(data.reactions){
+                setValue(reactionEls.heart,data.reactions.heart);
+                setValue(reactionEls.like,data.reactions.like);
+                setValue(reactionEls.dislike,data.reactions.dislike);
+            }
+            localStorage.setItem(reactionStorageKey,data.selectedReaction || pending);
+            localStorage.removeItem('dtcpReactionPendingV1');
+            applyReactionLock(data.selectedReaction || pending);
+        }catch(_){ /* keep pending */ }
+    }
+
     function initReactions(){
         const selected = localStorage.getItem(reactionStorageKey) || '';
         applyReactionLock(selected);
         document.querySelectorAll('.visitor-reaction-btn').forEach(btn=>{
             btn.addEventListener('click',handleReactionClick);
         });
-        loadReactionCounts();
+        loadReactionCounts().then(syncPendingReaction);
     }
 
     function initVisitorModule(){
         loadVisitorStats();
         initReactions();
     }
+
     if(document.readyState==='loading'){
         document.addEventListener('DOMContentLoaded',initVisitorModule,{once:true});
     }else{
