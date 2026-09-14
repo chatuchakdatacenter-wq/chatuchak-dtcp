@@ -11636,32 +11636,14 @@ if(document.readyState==='loading'){
 (function(){
     'use strict';
 
-    /* =========================================================
-       DTCP VISITOR / REACTION STATS — STABLE V2
-       ---------------------------------------------------------
-       1) CounterAPI V2 only (V1 was retired)
-       2) Separate COUNT and READ operations
-       3) One visitor transaction per page instance
-       4) Never allow an older server value to overwrite a newer UI value
-       5) Local optimistic cache prevents 47 -> 46 visual rollback
-       6) Retry / refresh after CounterAPI's buffer has time to flush
-       ========================================================= */
-
     const EXPECTED_HOST = 'chatuchakdatacenter-wq.github.io';
-    const API_BASE = 'https://api.counterapi.dev/v2';
+    const NAMESPACE = 'chatuchakdatacenter-wq.github.io';
+    const API_BASE = 'https://counterapi.com/api/';
 
-    /*
-     * CounterAPI V2 workspace.
-     * If your CounterAPI account uses a different workspace name,
-     * change ONLY this value.
-     * Public counters can be read by name; private counters require
-     * an API key. Do not put a private API key in a public GitHub page.
-     */
-    const V2_WORKSPACE = 'chatuchakdatacenter-wq.github.io';
-    const V2_API_KEY = '';
-
-    const VISITOR_COUNTER_PREFIX = 'dtcp-pageviews-v2';
-    const REACTION_COUNTER_PREFIX = 'dtcp-reactions-v2';
+    // HTML-only / lightweight mode: ไม่พึ่ง Apps Script
+    // ใช้ชุด key เดิมเพื่อรักษายอดต่อเนื่องจากระบบ CounterAPI
+    const VISITOR_COUNTER_PREFIX = 'dtcp-pageviews-v1-20260912';
+    const REACTION_COUNTER_PREFIX = 'dtcp-v2-20260912';
 
     const STATUS = document.getElementById('visitorStatsStatus');
     const visitorEls = {
@@ -11680,31 +11662,27 @@ if(document.readyState==='loading'){
     const reactionStatus = document.getElementById('visitorReactionStatus');
 
     const STORAGE = {
-        reaction: 'dtcpWebsiteReactionV3',
-        reactionCounts: 'dtcpWebsiteReactionCountsV3',
-        reactionCountsAt: 'dtcpWebsiteReactionCountsAtV3',
-        reactionPending: 'dtcpWebsiteReactionPendingV3',
-        visitorCache: 'dtcpVisitorStatsCacheV2',
-        visitorCountedPage: 'dtcpVisitorCountedPageV2'
+        reaction: 'dtcpWebsiteReactionV2',
+        reactionCounts: 'dtcpWebsiteReactionCountsV2',
+        reactionCountsAt: 'dtcpWebsiteReactionCountsAtV2',
+
+        // เก็บจำนวนที่กดจากเครื่องนี้ไว้ชั่วคราว
+        // ป้องกัน API ตอบค่าค้าง เช่น 4 แล้วทำให้หน้าจอกลับจาก 5 -> 4
+        reactionPending: 'dtcpWebsiteReactionPendingV2'
     };
 
+    // แสดง cache ได้ทันทีเพื่อ UX แต่การเปิดหน้า/กลับมาดูส่วนนี้
+    // จะอ่านยอดออนไลน์ล่าสุดทันที ไม่รอ TTL
     const REACTION_CACHE_TTL = 30 * 1000;
-    const VISITOR_REFRESH_DELAYS = [3500, 7000, 12000];
-
-    /* ---------------------------------------------------------
-       Generic helpers
-       --------------------------------------------------------- */
-    function safeNumber(value, fallback=0){
-        const n = Number(value);
-        return Number.isFinite(n) ? n : fallback;
-    }
+    let reactionSyncPromise = null;
 
     function setValue(el, value){
         if(!el) return;
         el.classList.remove('is-loading','is-error');
+
         const n = Number(value);
         el.textContent = Number.isFinite(n)
-            ? Math.max(0, Math.floor(n)).toLocaleString('th-TH')
+            ? n.toLocaleString('th-TH')
             : '—';
     }
 
@@ -11715,6 +11693,7 @@ if(document.readyState==='loading'){
             el.classList.add('is-error');
             el.textContent='—';
         });
+
         if(STATUS) STATUS.textContent=message;
     }
 
@@ -11736,478 +11715,424 @@ if(document.readyState==='loading'){
         };
     }
 
-    function visitorCounterNames(d){
-        return {
-            today:`${VISITOR_COUNTER_PREFIX}-day-${d.day}`,
-            month:`${VISITOR_COUNTER_PREFIX}-month-${d.month}`,
-            year:`${VISITOR_COUNTER_PREFIX}-year-${d.year}`,
-            total:`${VISITOR_COUNTER_PREFIX}-total`
-        };
-    }
+    async function counterRequest(action,key,params={},timeoutMs=5500){
+        const q = new URLSearchParams({
+            noFormatting:'true',
+            _ts:String(Date.now()),
+            ...params
+        });
 
-    function readJsonStorage(key, fallback=null){
-        try{
-            const raw=localStorage.getItem(key);
-            return raw ? JSON.parse(raw) : fallback;
-        }catch(_){
-            return fallback;
-        }
-    }
+        const url =
+            `${API_BASE}${encodeURIComponent(NAMESPACE)}/` +
+            `${encodeURIComponent(action)}/` +
+            `${encodeURIComponent(key)}?${q.toString()}`;
 
-    function writeJsonStorage(key,value){
-        try{
-            localStorage.setItem(key,JSON.stringify(value));
-            return true;
-        }catch(_){
-            return false;
-        }
-    }
-
-    /* ---------------------------------------------------------
-       CounterAPI V2 transport
-       --------------------------------------------------------- */
-    async function counterRequest(action,key,params={},timeoutMs=7000){
-        const safeKey=encodeURIComponent(key);
-        let endpoint;
-
-        /*
-         * Compatibility layer used by the reaction code below.
-         * - view/readOnly => GET current value
-         * - vote/behavior => UP by one
-         * - visitorCount => UP by one
-         */
-        if(action==='vote' && params.behavior==='vote'){
-            endpoint=`${API_BASE}/${encodeURIComponent(V2_WORKSPACE)}/${safeKey}/up`;
-        }else if(action==='visitorCount'){
-            endpoint=`${API_BASE}/${encodeURIComponent(V2_WORKSPACE)}/${safeKey}/up`;
-        }else{
-            endpoint=`${API_BASE}/${encodeURIComponent(V2_WORKSPACE)}/${safeKey}`;
-        }
-
-        const controller=new AbortController();
-        const timer=setTimeout(()=>controller.abort(),timeoutMs);
-
-        const headers={
-            'Accept':'application/json',
-            'Cache-Control':'no-cache'
-        };
-
-        if(V2_API_KEY){
-            headers.Authorization=`Bearer ${V2_API_KEY}`;
-        }
+        const controller = new AbortController();
+        const timer = setTimeout(()=>controller.abort(),timeoutMs);
 
         try{
-            const res=await fetch(`${endpoint}?_=${Date.now()}`,{
-                method:'GET',
+            const res = await fetch(url,{
                 cache:'no-store',
                 mode:'cors',
-                headers,
                 signal:controller.signal,
                 referrerPolicy:'strict-origin-when-cross-origin'
             });
 
-            if(!res.ok){
-                throw new Error(`CounterAPI V2 HTTP ${res.status}`);
-            }
+            if(!res.ok) throw new Error('HTTP '+res.status);
 
-            const data=await res.json();
-
-            /* CounterAPI responses may expose value in different wrappers. */
-            const value =
-                data?.value ??
-                data?.count ??
-                data?.data?.value ??
-                data?.data?.count;
-
-            return {
-                ...data,
-                value:safeNumber(value,NaN)
-            };
+            return await res.json();
         }finally{
             clearTimeout(timer);
         }
     }
 
-    /* ---------------------------------------------------------
-       Stable visitor cache
-       --------------------------------------------------------- */
-    function readVisitorCache(){
-        const c=readJsonStorage(STORAGE.visitorCache,null);
-        if(!c || typeof c!=='object') return null;
-
-        return {
-            day:c.day || '',
-            month:c.month || '',
-            year:c.year || '',
-            total:Math.max(0,safeNumber(c.total)),
-            savedAt:safeNumber(c.savedAt)
-        };
-    }
-
-    function saveVisitorCache(values,d){
-        writeJsonStorage(STORAGE.visitorCache,{
-            day:d.day,
-            month:d.month,
-            year:d.year,
-            total:Math.max(0,safeNumber(values.total)),
-            savedAt:Date.now()
-        });
-    }
-
-    function renderVisitorStats(values){
-        if(!values) return;
-        setValue(visitorEls.today,values.today);
-        setValue(visitorEls.month,values.month);
-        setValue(visitorEls.year,values.year);
-        setValue(visitorEls.total,values.total);
-    }
-
-    function mergeVisitorValues(current,incoming){
-        /* NEVER move a displayed counter backwards. */
-        return {
-            today:Math.max(safeNumber(current?.today),safeNumber(incoming?.today)),
-            month:Math.max(safeNumber(current?.month),safeNumber(incoming?.month)),
-            year:Math.max(safeNumber(current?.year),safeNumber(incoming?.year)),
-            total:Math.max(safeNumber(current?.total),safeNumber(incoming?.total))
-        };
-    }
-
-    async function readVisitorCounters(names){
-        const [today,month,year,total]=await Promise.all([
-            counterRequest('get',names.today),
-            counterRequest('get',names.month),
-            counterRequest('get',names.year),
-            counterRequest('get',names.total)
-        ]);
-
-        return {
-            today:today.value,
-            month:month.value,
-            year:year.value,
-            total:total.value
-        };
-    }
-
-    async function countVisitorOnce(names){
-        /* One count operation per page instance, even if init is triggered twice. */
-        if(window.__dtcpVisitorCountPromise){
-            return window.__dtcpVisitorCountPromise;
-        }
-
-        window.__dtcpVisitorCountPromise=(async()=>{
-            const d=datePartsBangkok();
-            const pageToken=`${location.pathname}|${d.day}|${performance.timeOrigin || Date.now()}`;
-
-            try{
-                /* Same page instance protection. */
-                if(window.__dtcpVisitorAlreadyCounted){
-                    return null;
-                }
-                window.__dtcpVisitorAlreadyCounted=true;
-
-                /*
-                 * Count FOUR independent counters exactly once.
-                 * The API response is used as the optimistic server value.
-                 */
-                const [today,month,year,total]=await Promise.all([
-                    counterRequest('visitorCount',names.today),
-                    counterRequest('visitorCount',names.month),
-                    counterRequest('visitorCount',names.year),
-                    counterRequest('visitorCount',names.total)
-                ]);
-
-                const values={
-                    today:today.value,
-                    month:month.value,
-                    year:year.value,
-                    total:total.value
-                };
-
-                /* Remember that this exact page instance has counted. */
-                try{
-                    sessionStorage.setItem(STORAGE.visitorCountedPage,pageToken);
-                }catch(_){ }
-
-                return values;
-            }catch(err){
-                window.__dtcpVisitorAlreadyCounted=false;
-                throw err;
-            }
-        })();
-
-        return window.__dtcpVisitorCountPromise;
-    }
-
-    async function loadVisitorStats(){
-        if(location.protocol!=='https:' || location.hostname!==EXPECTED_HOST){
+    async function loadVisitorStats(forceRefresh=false){
+        if(location.protocol !== 'https:' || location.hostname !== EXPECTED_HOST){
             setVisitorUnavailable('โหมดทดสอบ Local — ไม่บันทึกสถิติจริง');
             return;
         }
 
-        if(window.__dtcpVisitorStatsPromise){
-            return window.__dtcpVisitorStatsPromise;
+        /*
+         * INITIAL LOAD:
+         * ใช้ view เพื่อบันทึก 1 pageview ตามระบบเดิม
+         *
+         * REFRESH:
+         * ใช้ view + readOnly=true เพื่ออ่านยอดล่าสุดโดยไม่เพิ่ม
+         * จำนวนผู้เข้าชมซ้ำจากการเปิด/เลื่อนกลับมาดูส่วนนี้
+         */
+        if(!forceRefresh && window.__dtcpVisitorRequested) return;
+        if(forceRefresh && window.__dtcpVisitorRefreshing) return;
+
+        if(forceRefresh){
+            window.__dtcpVisitorRefreshing = true;
+        }else{
+            window.__dtcpVisitorRequested = true;
         }
 
-        window.__dtcpVisitorStatsPromise=(async()=>{
-            const d=datePartsBangkok();
-            const names=visitorCounterNames(d);
-            let displayed={today:0,month:0,year:0,total:0};
+        const d = datePartsBangkok();
 
-            /* Render last known good value immediately. */
-            const cached=readVisitorCache();
-            if(cached){
-                displayed={
-                    today:cached.day===d.day ? cached.dayValue : 0,
-                    month:cached.month===d.month ? cached.monthValue : 0,
-                    year:cached.year===d.year ? cached.yearValue : 0,
-                    total:cached.total
-                };
+        if(STATUS){
+            STATUS.textContent = forceRefresh
+                ? 'กำลังอัปเดตสถิติการเข้าชม...'
+                : 'กำลังโหลดสถิติการเข้าชม...';
+        }
 
-                /* Backward-compatible cache values may not contain the sub-values. */
-                if(cached.today != null) displayed.today=safeNumber(cached.today);
-                if(cached.monthValue != null) displayed.month=safeNumber(cached.monthValue);
-                if(cached.yearValue != null) displayed.year=safeNumber(cached.yearValue);
+        try{
+            const readParams = forceRefresh ? {readOnly:'true'} : {};
 
-                if(cached.today != null || cached.monthValue != null || cached.yearValue != null){
-                    renderVisitorStats(displayed);
-                }
+            const [today,month,year,total] = await Promise.all([
+                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-day-${d.day}`,readParams),
+                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-month-${d.month}`,readParams),
+                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-year-${d.year}`,readParams),
+                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-total`,readParams)
+            ]);
+
+            setValue(visitorEls.today,today.value);
+            setValue(visitorEls.month,month.value);
+            setValue(visitorEls.year,year.value);
+            setValue(visitorEls.total,total.value);
+
+            if(STATUS){
+                STATUS.textContent='อัปเดตล่าสุดจากระบบสถิติออนไลน์ · เวลาไทย';
+            }
+        }catch(err){
+            console.warn('[Visitor Stats] unavailable:',err);
+
+            if(STATUS){
+                STATUS.textContent =
+                    'ระบบสถิติไม่พร้อมชั่วคราว · กำลังรอการเชื่อมต่อใหม่';
             }
 
-            try{
-                /*
-                 * STEP 1 — count.
-                 * This is intentionally separate from STEP 2 — read.
-                 */
-                const counted=await countVisitorOnce(names);
-                if(counted){
-                    displayed=mergeVisitorValues(displayed,counted);
-                    renderVisitorStats(displayed);
-                }
-
-                /*
-                 * STEP 2 — read the authoritative counters.
-                 * Never allow a stale response to reduce the display.
-                 */
-                const fresh=await readVisitorCounters(names);
-                displayed=mergeVisitorValues(displayed,fresh);
-                renderVisitorStats(displayed);
-
-                writeJsonStorage(STORAGE.visitorCache,{
-                    day:d.day,
-                    month:d.month,
-                    year:d.year,
-                    today:displayed.today,
-                    monthValue:displayed.month,
-                    yearValue:displayed.year,
-                    total:displayed.total,
-                    savedAt:Date.now()
-                });
-
-                if(STATUS){
-                    STATUS.textContent='อัปเดตสถิติออนไลน์ · ระบบป้องกันค่าตีกลับ · เวลาไทย';
-                }
-
-                /*
-                 * CounterAPI V2 documents buffered freshness.
-                 * Re-read several times after the write so a delayed value
-                 * can catch up without ever making the UI move backwards.
-                 */
-                VISITOR_REFRESH_DELAYS.forEach(delay=>{
-                    setTimeout(async()=>{
-                        try{
-                            const latest=await readVisitorCounters(names);
-                            displayed=mergeVisitorValues(displayed,latest);
-                            renderVisitorStats(displayed);
-                            writeJsonStorage(STORAGE.visitorCache,{
-                                day:d.day,
-                                month:d.month,
-                                year:d.year,
-                                today:displayed.today,
-                                monthValue:displayed.month,
-                                yearValue:displayed.year,
-                                total:displayed.total,
-                                savedAt:Date.now()
-                            });
-                        }catch(err){
-                            console.warn('[Visitor Stats] refresh unavailable:',err);
-                        }
-                    },delay);
-                });
-
-            }catch(err){
-                console.warn('[Visitor Stats] unavailable:',err);
-
-                /*
-                 * If the network/API fails, retain the last known good value
-                 * instead of replacing a real number with 0 or a lower number.
-                 */
-                if(cached && (
-                    cached.today!=null ||
-                    cached.monthValue!=null ||
-                    cached.yearValue!=null ||
-                    cached.total!=null
-                )){
-                    renderVisitorStats({
-                        today:safeNumber(cached.today),
-                        month:safeNumber(cached.monthValue),
-                        year:safeNumber(cached.yearValue),
-                        total:safeNumber(cached.total)
-                    });
-                    if(STATUS) STATUS.textContent='ใช้ค่าล่าสุดที่บันทึกไว้ · รอเชื่อมต่อระบบสถิติ';
-                }else{
-                    setVisitorUnavailable('ระบบสถิติไม่พร้อมชั่วคราว · หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ');
-                }
+            /*
+             * ถ้าเป็น refresh ให้คงค่าที่แสดงอยู่เดิมไว้
+             * ไม่เปลี่ยนเป็นขีด เพื่อให้ UX ไม่สะดุด
+             */
+            if(!forceRefresh){
+                setVisitorUnavailable(
+                    'ระบบสถิติไม่พร้อมชั่วคราว · หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ'
+                );
             }
-        })();
-
-        return window.__dtcpVisitorStatsPromise;
+        }finally{
+            if(forceRefresh){
+                window.__dtcpVisitorRefreshing = false;
+            }
+        }
     }
 
-    /* =========================================================
-       REACTIONS — same stable transport, local-first rendering
-       ========================================================= */
-
     function readReactionCache(){
-        const parsed=readJsonStorage(STORAGE.reactionCounts,null);
-        return parsed && typeof parsed==='object' ? parsed : null;
+        try{
+            const raw = localStorage.getItem(STORAGE.reactionCounts);
+            const parsed = raw ? JSON.parse(raw) : null;
+
+            return parsed && typeof parsed === 'object'
+                ? parsed
+                : null;
+        }catch(_){
+            return null;
+        }
     }
 
     function saveReactionCache(counts){
-        writeJsonStorage(STORAGE.reactionCounts,counts);
-        try{ localStorage.setItem(STORAGE.reactionCountsAt,String(Date.now())); }catch(_){ }
+        try{
+            localStorage.setItem(
+                STORAGE.reactionCounts,
+                JSON.stringify(counts)
+            );
+
+            localStorage.setItem(
+                STORAGE.reactionCountsAt,
+                String(Date.now())
+            );
+        }catch(_){}
     }
 
     function readPendingReactions(){
-        const parsed=readJsonStorage(STORAGE.reactionPending,null);
-        if(!parsed || typeof parsed!=='object'){
+        try{
+            const raw = localStorage.getItem(STORAGE.reactionPending);
+            const parsed = raw ? JSON.parse(raw) : null;
+
+            if(!parsed || typeof parsed !== 'object'){
+                return {heart:0,like:0,dislike:0};
+            }
+
+            return {
+                heart:Math.max(0,Number(parsed.heart)||0),
+                like:Math.max(0,Number(parsed.like)||0),
+                dislike:Math.max(0,Number(parsed.dislike)||0)
+            };
+        }catch(_){
             return {heart:0,like:0,dislike:0};
         }
-        return {
-            heart:Math.max(0,safeNumber(parsed.heart)),
-            like:Math.max(0,safeNumber(parsed.like)),
-            dislike:Math.max(0,safeNumber(parsed.dislike))
-        };
     }
 
     function savePendingReactions(pending){
-        writeJsonStorage(STORAGE.reactionPending,{
-            heart:Math.max(0,safeNumber(pending.heart)),
-            like:Math.max(0,safeNumber(pending.like)),
-            dislike:Math.max(0,safeNumber(pending.dislike))
-        });
+        try{
+            localStorage.setItem(
+                STORAGE.reactionPending,
+                JSON.stringify({
+                    heart:Math.max(0,Number(pending.heart)||0),
+                    like:Math.max(0,Number(pending.like)||0),
+                    dislike:Math.max(0,Number(pending.dislike)||0)
+                })
+            );
+        }catch(_){}
     }
 
     function getDisplayCounts(serverCounts){
-        if(!serverCounts) return null;
-        const pending=readPendingReactions();
+        if(!serverCounts){
+            return null;
+        }
+
+        const pending = readPendingReactions();
+
         return {
-            heart:Math.max(safeNumber(serverCounts.heart),safeNumber(serverCounts.heart)+pending.heart),
-            like:Math.max(safeNumber(serverCounts.like),safeNumber(serverCounts.like)+pending.like),
-            dislike:Math.max(safeNumber(serverCounts.dislike),safeNumber(serverCounts.dislike)+pending.dislike)
+            heart:Math.max(
+                Number(serverCounts.heart)||0,
+                (Number(serverCounts.heart)||0) + pending.heart
+            ),
+            like:Math.max(
+                Number(serverCounts.like)||0,
+                (Number(serverCounts.like)||0) + pending.like
+            ),
+            dislike:Math.max(
+                Number(serverCounts.dislike)||0,
+                (Number(serverCounts.dislike)||0) + pending.dislike
+            )
         };
     }
 
     function renderReactionCounts(counts){
         if(!counts) return;
-        const display=getDisplayCounts(counts);
+
+        const display = getDisplayCounts(counts);
+
         ['heart','like','dislike'].forEach(name=>{
-            if(display && display[name]!=null) setValue(reactionEls[name],display[name]);
+            if(display && display[name] != null){
+                setValue(reactionEls[name],display[name]);
+            }
         });
     }
 
     function applyReactionSelection(selected){
         document.querySelectorAll('.visitor-reaction-btn').forEach(btn=>{
-            const same=btn.dataset.reaction===selected;
+            const same = btn.dataset.reaction === selected;
+
             btn.classList.toggle('is-selected',same);
-            btn.classList.toggle('is-locked',!!selected && !same);
-            btn.disabled=!!selected;
-            btn.setAttribute('aria-pressed',same?'true':'false');
+            btn.classList.toggle(
+                'is-locked',
+                !!selected && !same
+            );
+
+            // เลือกได้ 1 ครั้งต่ออุปกรณ์ตามระบบเดิม
+            btn.disabled = !!selected;
+            btn.setAttribute(
+                'aria-pressed',
+                same ? 'true' : 'false'
+            );
         });
+
         if(selected && reactionStatus){
             reactionStatus.textContent='บันทึกความคิดเห็นของคุณแล้ว';
         }
     }
 
     async function syncReactionCounts(force=false){
-        const cached=readReactionCache();
-        if(cached) renderReactionCounts(cached);
+        const cached = readReactionCache();
 
-        let cachedAt=0;
-        try{ cachedAt=safeNumber(localStorage.getItem(STORAGE.reactionCountsAt)); }catch(_){ }
+        // แสดงค่าที่มีอยู่ทันทีระหว่างรอ server
+        if(cached){
+            renderReactionCounts(cached);
+        }
 
-        if(!force && cached && Date.now()-cachedAt<REACTION_CACHE_TTL) return;
-        if(location.protocol!=='https:' || location.hostname!==EXPECTED_HOST) return;
+        if(
+            location.protocol !== 'https:' ||
+            location.hostname !== EXPECTED_HOST
+        ){
+            return;
+        }
 
-        try{
-            const [heart,like,dislike]=await Promise.all([
-                counterRequest('get',`${REACTION_COUNTER_PREFIX}-heart`),
-                counterRequest('get',`${REACTION_COUNTER_PREFIX}-like`),
-                counterRequest('get',`${REACTION_COUNTER_PREFIX}-dislike`)
-            ]);
+        /*
+         * ทุกครั้งที่เรียกแบบ force=true ให้ถาม server ทันที
+         * ไม่ติด cache TTL เพื่อให้ตัวเลขล่าสุดขึ้นเร็วที่สุด
+         */
+        if(!force && cached){
+            const cachedAt = Number(
+                localStorage.getItem(STORAGE.reactionCountsAt) || 0
+            );
 
-            const serverCounts={
-                heart:safeNumber(heart.value),
-                like:safeNumber(like.value),
-                dislike:safeNumber(dislike.value)
-            };
-
-            /* Never regress a value already shown locally. */
-            const previous=cached || {heart:0,like:0,dislike:0};
-            const stable={
-                heart:Math.max(previous.heart,serverCounts.heart),
-                like:Math.max(previous.like,serverCounts.like),
-                dislike:Math.max(previous.dislike,serverCounts.dislike)
-            };
-
-            saveReactionCache(stable);
-            renderReactionCounts(stable);
-        }catch(err){
-            console.warn('[Website Reactions] read unavailable:',err);
-            if(!cached){
-                Object.values(reactionEls).forEach(el=>{if(el) el.textContent='—';});
+            if(Date.now()-cachedAt < REACTION_CACHE_TTL){
+                return;
             }
         }
+
+        // กันการยิง request ซ้อนกันจาก click/focus/visibility
+        if(reactionSyncPromise) return reactionSyncPromise;
+
+        reactionSyncPromise = (async()=>{
+            try{
+                const [heart,like,dislike] = await Promise.all([
+                    counterRequest(
+                        'vote',
+                        `${REACTION_COUNTER_PREFIX}-reaction-heart`,
+                        {readOnly:'true'}
+                    ),
+                    counterRequest(
+                        'vote',
+                        `${REACTION_COUNTER_PREFIX}-reaction-like`,
+                        {readOnly:'true'}
+                    ),
+                    counterRequest(
+                        'vote',
+                        `${REACTION_COUNTER_PREFIX}-reaction-dislike`,
+                        {readOnly:'true'}
+                    )
+                ]);
+
+                const serverCounts = {
+                    heart:Number(heart.value || 0),
+                    like:Number(like.value || 0),
+                    dislike:Number(dislike.value || 0)
+                };
+
+                /*
+                 * อย่าทับยอด pending ที่ผู้ใช้เพิ่งกดด้วยค่า server ที่ยังเก่า
+                 */
+                saveReactionCache(serverCounts);
+                renderReactionCounts(serverCounts);
+
+            }catch(err){
+                console.warn(
+                    '[Website Reactions] read unavailable:',
+                    err
+                );
+
+                // มี cache อยู่แล้ว ให้คงค่าบนหน้าจอไว้
+                if(!cached){
+                    Object.values(reactionEls).forEach(el=>{
+                        if(el) el.textContent='—';
+                    });
+                }
+            }finally{
+                reactionSyncPromise = null;
+            }
+        })();
+
+        return reactionSyncPromise;
     }
 
     async function handleReactionClick(event){
-        const btn=event.currentTarget;
-        const reaction=btn.dataset.reaction;
+        const btn = event.currentTarget;
+        const reaction = btn.dataset.reaction;
+
         if(!reaction) return;
 
-        const already=localStorage.getItem(STORAGE.reaction);
+        const already = localStorage.getItem(STORAGE.reaction);
+
         if(already){
             applyReactionSelection(already);
             return;
         }
 
-        if(location.protocol!=='https:' || location.hostname!==EXPECTED_HOST){
-            if(reactionStatus) reactionStatus.textContent='โหมดทดสอบ Local — ยังไม่ส่งความคิดเห็นจริง';
+        if(
+            location.protocol !== 'https:' ||
+            location.hostname !== EXPECTED_HOST
+        ){
+            if(reactionStatus){
+                reactionStatus.textContent =
+                    'โหมดทดสอบ Local — ยังไม่ส่งความคิดเห็นจริง';
+            }
             return;
         }
 
-        const counts=readReactionCache() || {heart:0,like:0,dislike:0};
-        const pending=readPendingReactions();
-        counts[reaction]=Math.max(0,safeNumber(counts[reaction]));
-        pending[reaction]=Math.max(0,safeNumber(pending[reaction]))+1;
+        /*
+         * LOCAL-FIRST
+         * -------------------------------------------------------
+         * แก้ปัญหาหลักของอาการ "กดแล้วค้างที่ 4"
+         *
+         * เดิม:
+         *   cache = 4
+         *   กดหัวใจ
+         *   แสดง 5
+         *   จากนั้น sync API อ่านได้ 4
+         *   แล้วเอา 4 มาทับหน้าจอ
+         *
+         * ใหม่:
+         *   cache = 4
+         *   pending = 1
+         *   หน้าจอ = 4 + 1 = 5
+         *   ถ้า API ยังตอบ 4 ก็ยังแสดง 5
+         *   เมื่อ API กลายเป็น 5 ระบบจะถือว่า sync สำเร็จ
+         */
+        const counts =
+            readReactionCache() ||
+            {heart:0,like:0,dislike:0};
 
-        try{ localStorage.setItem(STORAGE.reaction,reaction); }catch(_){ }
+        const pending = readPendingReactions();
+
+        counts[reaction] =
+            Math.max(0,Number(counts[reaction])||0);
+
+        pending[reaction] =
+            Math.max(0,Number(pending[reaction])||0) + 1;
+
+        // จำการเลือกก่อน เพื่อกันการกดซ้ำ
+        try{
+            localStorage.setItem(
+                STORAGE.reaction,
+                reaction
+            );
+        }catch(_){}
+
         savePendingReactions(pending);
         saveReactionCache(counts);
+
+        // อัปเดตหน้าจอทันที
         renderReactionCounts(counts);
         applyReactionSelection(reaction);
 
-        if(reactionStatus) reactionStatus.textContent='กำลังบันทึกความคิดเห็น...';
+        if(reactionStatus){
+            reactionStatus.textContent =
+                'กำลังบันทึกความคิดเห็น...';
+        }
 
         try{
-            const res=await counterRequest('vote',`${REACTION_COUNTER_PREFIX}-${reaction}`,{behavior:'vote'});
-            const apiValue=safeNumber(res?.value,NaN);
-            const expected=safeNumber(counts[reaction])+pending[reaction];
+            const res = await counterRequest(
+                'vote',
+                `${REACTION_COUNTER_PREFIX}-reaction-${reaction}`,
+                {behavior:'vote'},
+                5500
+            );
 
-            if(Number.isFinite(apiValue) && apiValue>=expected){
-                counts[reaction]=apiValue;
-                pending[reaction]=0;
-            }else if(Number.isFinite(apiValue)){
-                counts[reaction]=Math.max(safeNumber(counts[reaction]),apiValue);
+            const apiValue = Number(res?.value);
+
+            if(Number.isFinite(apiValue)){
+                /*
+                 * CounterAPI บางช่วงอาจตอบค่าก่อน transaction
+                 * จะถูกสะท้อนกลับมาเต็ม ๆ
+                 *
+                 * ถ้า API >= ค่าที่เราเคยคาดไว้:
+                 *     ถือว่า server รับยอดแล้ว -> ล้าง pending
+                 *
+                 * ถ้า API ยังต่ำกว่า:
+                 *     อย่าล้าง pending
+                 *     เพราะจะทำให้ 5 เด้งกลับเป็น 4
+                 */
+                const expected =
+                    (Number(counts[reaction])||0) +
+                    (pending[reaction]||0);
+
+                if(apiValue >= expected){
+                    counts[reaction] = apiValue;
+                    pending[reaction] = 0;
+                }else{
+                    // API ยังคืนค่าค้างอยู่
+                    // คงยอดที่ผู้ใช้เพิ่งกดไว้บนหน้าจอ
+                    counts[reaction] =
+                        Math.max(
+                            Number(counts[reaction])||0,
+                            apiValue
+                        );
+                }
             }
 
             saveReactionCache(counts);
@@ -12215,48 +12140,156 @@ if(document.readyState==='loading'){
             renderReactionCounts(counts);
 
             if(reactionStatus){
-                reactionStatus.textContent=pending[reaction]>0
-                    ? 'บันทึกแล้ว · กำลังซิงค์ยอดออนไลน์'
-                    : 'ขอบคุณสำหรับความคิดเห็นของคุณ';
+                if(pending[reaction] > 0){
+                    reactionStatus.textContent =
+                        'บันทึกแล้ว · กำลังซิงค์ยอดออนไลน์';
+                }else{
+                    reactionStatus.textContent =
+                        'ขอบคุณสำหรับความคิดเห็นของคุณ';
+                }
             }
 
-            setTimeout(()=>syncReactionCounts(true),5000);
+            /*
+             * ไม่เรียก sync ทันทีหลังโหวตอีกต่อไป
+             * เพราะนี่คือจุดที่ทำให้ยอด 5 ถูก API ค่าเก่า 4 ทับ
+             *
+             * รอให้ระบบภายนอกมีเวลาอัปเดต แล้วค่อยตรวจอีกครั้ง
+             */
+            /*
+             * ซิงค์แบบเร่งด่วนหลายจังหวะ:
+             * 0.8s / 2s / 4s
+             * เพื่อให้ทันทีที่ CounterAPI สะท้อน transaction
+             * ตัวเลขออนไลน์จะอัปเดตโดยไม่ต้องรอ 5 วินาทีเต็ม
+             */
+            [800,2000,4000].forEach(delay=>{
+                setTimeout(()=>{
+                    syncReactionCounts(true);
+                },delay);
+            });
+
         }catch(err){
-            console.warn('[Website Reactions] vote unavailable:',err);
+            console.warn(
+                '[Website Reactions] vote unavailable:',
+                err
+            );
+
+            /*
+             * ยังคงยอดที่ผู้ใช้กดไว้
+             * ไม่ย้อนจาก 5 กลับเป็น 4
+             */
             saveReactionCache(counts);
             savePendingReactions(pending);
             renderReactionCounts(counts);
-            if(reactionStatus) reactionStatus.textContent='รับความคิดเห็นแล้ว · รอซิงค์ยอดออนไลน์';
+
+            if(reactionStatus){
+                reactionStatus.textContent =
+                    'รับความคิดเห็นแล้ว · รอซิงค์ยอดออนไลน์';
+            }
         }
     }
 
     function initReactions(){
-        let selected='';
-        try{ selected=localStorage.getItem(STORAGE.reaction)||''; }catch(_){ }
+        const selected =
+            localStorage.getItem(STORAGE.reaction) || '';
+
         applyReactionSelection(selected);
 
-        const cached=readReactionCache();
-        if(cached) renderReactionCounts(cached);
+        const cached = readReactionCache();
 
-        document.querySelectorAll('.visitor-reaction-btn').forEach(btn=>{
-            btn.addEventListener('click',handleReactionClick,{passive:false});
-        });
-
-        const run=()=>syncReactionCounts(false);
-        if('requestIdleCallback' in window){
-            requestIdleCallback(run,{timeout:1800});
-        }else{
-            setTimeout(run,350);
+        if(cached){
+            renderReactionCounts(cached);
         }
+
+        document
+            .querySelectorAll('.visitor-reaction-btn')
+            .forEach(btn=>{
+                btn.addEventListener(
+                    'click',
+                    handleReactionClick,
+                    {passive:false}
+                );
+            });
+
+        /*
+         * ไม่รอ requestIdleCallback:
+         * ส่วน "ความรู้สึกต่อเว็บไซต์" ต้องอ่านยอดออนไลน์ทันที
+         * เมื่อเปิดหน้า
+         */
+        syncReactionCounts(true);
+    }
+
+    function refreshVisitorAndReactions(){
+        loadVisitorStats(true);
+        syncReactionCounts(true);
     }
 
     function init(){
-        loadVisitorStats();
+        // เปิดหน้า = อัปเดตทันที
+        loadVisitorStats(false);
         initReactions();
+
+        const section = document.getElementById('website-visitor-stats');
+        const title = document.querySelector('.visitor-stats-title');
+        const reactionTitle = document.querySelector('.visitor-reactions-title');
+
+        /*
+         * เมื่อผู้ใช้ "เปิดดู/เลื่อนมาถึง" ส่วนสถิติ
+         * ให้ดึงยอดล่าสุดทันที โดยไม่เพิ่ม pageview ซ้ำ
+         */
+        if(section && 'IntersectionObserver' in window){
+            let seen = false;
+
+            const observer = new IntersectionObserver(entries=>{
+                entries.forEach(entry=>{
+                    if(entry.isIntersecting){
+                        if(seen){
+                            refreshVisitorAndReactions();
+                        }
+                        seen = true;
+                    }
+                });
+            },{
+                threshold:0.15
+            });
+
+            observer.observe(section);
+        }
+
+        /*
+         * เมื่อผู้ใช้กดหัวข้อทั้ง 2 จุด:
+         * อัปเดตยอดออนไลน์ทันที โดยไม่เพิ่มยอดเข้าชมซ้ำ
+         */
+        [title,reactionTitle].forEach(el=>{
+            if(!el) return;
+
+            el.style.cursor='pointer';
+            el.addEventListener('click',refreshVisitorAndReactions);
+        });
+
+        /*
+         * กลับมาที่แท็บ / กลับมาที่หน้าเว็บ = refresh ทันที
+         */
+        document.addEventListener('visibilitychange',()=>{
+            if(document.visibilityState==='visible'){
+                refreshVisitorAndReactions();
+            }
+        });
+
+        window.addEventListener('pageshow',()=>{
+            refreshVisitorAndReactions();
+        });
+
+        window.addEventListener('focus',()=>{
+            refreshVisitorAndReactions();
+        });
     }
 
     if(document.readyState==='loading'){
-        document.addEventListener('DOMContentLoaded',init,{once:true});
+        document.addEventListener(
+            'DOMContentLoaded',
+            init,
+            {once:true}
+        );
     }else{
         init();
     }
