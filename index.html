@@ -11652,25 +11652,38 @@ if(document.readyState==='loading'){
         year: document.getElementById('visitorYear'),
         total: document.getElementById('visitorTotal')
     };
+
     const reactionEls = {
         heart: document.getElementById('reactionHeartCount'),
         like: document.getElementById('reactionLikeCount'),
         dislike: document.getElementById('reactionDislikeCount')
     };
+
     const reactionStatus = document.getElementById('visitorReactionStatus');
 
     const STORAGE = {
         reaction: 'dtcpWebsiteReactionV2',
         reactionCounts: 'dtcpWebsiteReactionCountsV2',
-        reactionCountsAt: 'dtcpWebsiteReactionCountsAtV2'
+        reactionCountsAt: 'dtcpWebsiteReactionCountsAtV2',
+
+        // เก็บจำนวนที่กดจากเครื่องนี้ไว้ชั่วคราว
+        // ป้องกัน API ตอบค่าค้าง เช่น 4 แล้วทำให้หน้าจอกลับจาก 5 -> 4
+        reactionPending: 'dtcpWebsiteReactionPendingV2'
     };
-    const REACTION_CACHE_TTL = 5 * 60 * 1000;
+
+    // แสดง cache ได้ทันทีเพื่อ UX แต่การเปิดหน้า/กลับมาดูส่วนนี้
+    // จะอ่านยอดออนไลน์ล่าสุดทันที ไม่รอ TTL
+    const REACTION_CACHE_TTL = 30 * 1000;
+    let reactionSyncPromise = null;
 
     function setValue(el, value){
         if(!el) return;
         el.classList.remove('is-loading','is-error');
+
         const n = Number(value);
-        el.textContent = Number.isFinite(n) ? n.toLocaleString('th-TH') : '—';
+        el.textContent = Number.isFinite(n)
+            ? n.toLocaleString('th-TH')
+            : '—';
     }
 
     function setVisitorUnavailable(message){
@@ -11680,13 +11693,21 @@ if(document.readyState==='loading'){
             el.classList.add('is-error');
             el.textContent='—';
         });
+
         if(STATUS) STATUS.textContent=message;
     }
 
     function datePartsBangkok(){
         const parts = new Intl.DateTimeFormat('en-CA',{
-            timeZone:'Asia/Bangkok', year:'numeric', month:'2-digit', day:'2-digit'
-        }).formatToParts(new Date()).reduce((a,p)=>{a[p.type]=p.value;return a;},{});
+            timeZone:'Asia/Bangkok',
+            year:'numeric',
+            month:'2-digit',
+            day:'2-digit'
+        }).formatToParts(new Date()).reduce((a,p)=>{
+            a[p.type]=p.value;
+            return a;
+        },{});
+
         return {
             day:`${parts.year}-${parts.month}-${parts.day}`,
             month:`${parts.year}-${parts.month}`,
@@ -11694,11 +11715,21 @@ if(document.readyState==='loading'){
         };
     }
 
-    async function counterRequest(action,key,params={},timeoutMs=4500){
-        const q = new URLSearchParams({noFormatting:'true',...params});
-        const url = `${API_BASE}${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(action)}/${encodeURIComponent(key)}?${q.toString()}`;
+    async function counterRequest(action,key,params={},timeoutMs=5500){
+        const q = new URLSearchParams({
+            noFormatting:'true',
+            _ts:String(Date.now()),
+            ...params
+        });
+
+        const url =
+            `${API_BASE}${encodeURIComponent(NAMESPACE)}/` +
+            `${encodeURIComponent(action)}/` +
+            `${encodeURIComponent(key)}?${q.toString()}`;
+
         const controller = new AbortController();
         const timer = setTimeout(()=>controller.abort(),timeoutMs);
+
         try{
             const res = await fetch(url,{
                 cache:'no-store',
@@ -11706,37 +11737,85 @@ if(document.readyState==='loading'){
                 signal:controller.signal,
                 referrerPolicy:'strict-origin-when-cross-origin'
             });
+
             if(!res.ok) throw new Error('HTTP '+res.status);
+
             return await res.json();
-        } finally {
+        }finally{
             clearTimeout(timer);
         }
     }
 
-    async function loadVisitorStats(){
+    async function loadVisitorStats(forceRefresh=false){
         if(location.protocol !== 'https:' || location.hostname !== EXPECTED_HOST){
             setVisitorUnavailable('โหมดทดสอบ Local — ไม่บันทึกสถิติจริง');
             return;
         }
-        if(window.__dtcpVisitorRequested) return;
-        window.__dtcpVisitorRequested = true;
+
+        /*
+         * INITIAL LOAD:
+         * ใช้ view เพื่อบันทึก 1 pageview ตามระบบเดิม
+         *
+         * REFRESH:
+         * ใช้ view + readOnly=true เพื่ออ่านยอดล่าสุดโดยไม่เพิ่ม
+         * จำนวนผู้เข้าชมซ้ำจากการเปิด/เลื่อนกลับมาดูส่วนนี้
+         */
+        if(!forceRefresh && window.__dtcpVisitorRequested) return;
+        if(forceRefresh && window.__dtcpVisitorRefreshing) return;
+
+        if(forceRefresh){
+            window.__dtcpVisitorRefreshing = true;
+        }else{
+            window.__dtcpVisitorRequested = true;
+        }
 
         const d = datePartsBangkok();
+
+        if(STATUS){
+            STATUS.textContent = forceRefresh
+                ? 'กำลังอัปเดตสถิติการเข้าชม...'
+                : 'กำลังโหลดสถิติการเข้าชม...';
+        }
+
         try{
+            const readParams = forceRefresh ? {readOnly:'true'} : {};
+
             const [today,month,year,total] = await Promise.all([
-                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-day-${d.day}`),
-                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-month-${d.month}`),
-                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-year-${d.year}`),
-                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-total`)
+                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-day-${d.day}`,readParams),
+                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-month-${d.month}`,readParams),
+                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-year-${d.year}`,readParams),
+                counterRequest('view',`${VISITOR_COUNTER_PREFIX}-total`,readParams)
             ]);
+
             setValue(visitorEls.today,today.value);
             setValue(visitorEls.month,month.value);
             setValue(visitorEls.year,year.value);
             setValue(visitorEls.total,total.value);
-            if(STATUS) STATUS.textContent='อัปเดตอัตโนมัติจากระบบสถิติออนไลน์ · เวลาไทย';
+
+            if(STATUS){
+                STATUS.textContent='อัปเดตล่าสุดจากระบบสถิติออนไลน์ · เวลาไทย';
+            }
         }catch(err){
             console.warn('[Visitor Stats] unavailable:',err);
-            setVisitorUnavailable('ระบบสถิติไม่พร้อมชั่วคราว · หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ');
+
+            if(STATUS){
+                STATUS.textContent =
+                    'ระบบสถิติไม่พร้อมชั่วคราว · กำลังรอการเชื่อมต่อใหม่';
+            }
+
+            /*
+             * ถ้าเป็น refresh ให้คงค่าที่แสดงอยู่เดิมไว้
+             * ไม่เปลี่ยนเป็นขีด เพื่อให้ UX ไม่สะดุด
+             */
+            if(!forceRefresh){
+                setVisitorUnavailable(
+                    'ระบบสถิติไม่พร้อมชั่วคราว · หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ'
+                );
+            }
+        }finally{
+            if(forceRefresh){
+                window.__dtcpVisitorRefreshing = false;
+            }
         }
     }
 
@@ -11744,32 +11823,114 @@ if(document.readyState==='loading'){
         try{
             const raw = localStorage.getItem(STORAGE.reactionCounts);
             const parsed = raw ? JSON.parse(raw) : null;
-            return parsed && typeof parsed === 'object' ? parsed : null;
-        }catch(_){ return null; }
+
+            return parsed && typeof parsed === 'object'
+                ? parsed
+                : null;
+        }catch(_){
+            return null;
+        }
     }
 
     function saveReactionCache(counts){
         try{
-            localStorage.setItem(STORAGE.reactionCounts,JSON.stringify(counts));
-            localStorage.setItem(STORAGE.reactionCountsAt,String(Date.now()));
-        }catch(_){ }
+            localStorage.setItem(
+                STORAGE.reactionCounts,
+                JSON.stringify(counts)
+            );
+
+            localStorage.setItem(
+                STORAGE.reactionCountsAt,
+                String(Date.now())
+            );
+        }catch(_){}
+    }
+
+    function readPendingReactions(){
+        try{
+            const raw = localStorage.getItem(STORAGE.reactionPending);
+            const parsed = raw ? JSON.parse(raw) : null;
+
+            if(!parsed || typeof parsed !== 'object'){
+                return {heart:0,like:0,dislike:0};
+            }
+
+            return {
+                heart:Math.max(0,Number(parsed.heart)||0),
+                like:Math.max(0,Number(parsed.like)||0),
+                dislike:Math.max(0,Number(parsed.dislike)||0)
+            };
+        }catch(_){
+            return {heart:0,like:0,dislike:0};
+        }
+    }
+
+    function savePendingReactions(pending){
+        try{
+            localStorage.setItem(
+                STORAGE.reactionPending,
+                JSON.stringify({
+                    heart:Math.max(0,Number(pending.heart)||0),
+                    like:Math.max(0,Number(pending.like)||0),
+                    dislike:Math.max(0,Number(pending.dislike)||0)
+                })
+            );
+        }catch(_){}
+    }
+
+    function getDisplayCounts(serverCounts){
+        if(!serverCounts){
+            return null;
+        }
+
+        const pending = readPendingReactions();
+
+        return {
+            heart:Math.max(
+                Number(serverCounts.heart)||0,
+                (Number(serverCounts.heart)||0) + pending.heart
+            ),
+            like:Math.max(
+                Number(serverCounts.like)||0,
+                (Number(serverCounts.like)||0) + pending.like
+            ),
+            dislike:Math.max(
+                Number(serverCounts.dislike)||0,
+                (Number(serverCounts.dislike)||0) + pending.dislike
+            )
+        };
     }
 
     function renderReactionCounts(counts){
         if(!counts) return;
+
+        const display = getDisplayCounts(counts);
+
         ['heart','like','dislike'].forEach(name=>{
-            if(counts[name] != null) setValue(reactionEls[name],counts[name]);
+            if(display && display[name] != null){
+                setValue(reactionEls[name],display[name]);
+            }
         });
     }
 
     function applyReactionSelection(selected){
         document.querySelectorAll('.visitor-reaction-btn').forEach(btn=>{
             const same = btn.dataset.reaction === selected;
+
             btn.classList.toggle('is-selected',same);
-            btn.classList.toggle('is-locked',!!selected && !same);
+            btn.classList.toggle(
+                'is-locked',
+                !!selected && !same
+            );
+
+            // เลือกได้ 1 ครั้งต่ออุปกรณ์ตามระบบเดิม
             btn.disabled = !!selected;
-            btn.setAttribute('aria-pressed', same ? 'true' : 'false');
+            btn.setAttribute(
+                'aria-pressed',
+                same ? 'true' : 'false'
+            );
         });
+
         if(selected && reactionStatus){
             reactionStatus.textContent='บันทึกความคิดเห็นของคุณแล้ว';
         }
@@ -11777,102 +11938,362 @@ if(document.readyState==='loading'){
 
     async function syncReactionCounts(force=false){
         const cached = readReactionCache();
-        if(cached) renderReactionCounts(cached);
 
-        const cachedAt = Number(localStorage.getItem(STORAGE.reactionCountsAt) || 0);
-        if(!force && cached && Date.now()-cachedAt < REACTION_CACHE_TTL) return;
-        if(location.protocol !== 'https:' || location.hostname !== EXPECTED_HOST) return;
+        // แสดงค่าที่มีอยู่ทันทีระหว่างรอ server
+        if(cached){
+            renderReactionCounts(cached);
+        }
 
-        try{
-            const [heart,like,dislike] = await Promise.all([
-                counterRequest('vote',`${REACTION_COUNTER_PREFIX}-reaction-heart`,{readOnly:'true'}),
-                counterRequest('vote',`${REACTION_COUNTER_PREFIX}-reaction-like`,{readOnly:'true'}),
-                counterRequest('vote',`${REACTION_COUNTER_PREFIX}-reaction-dislike`,{readOnly:'true'})
-            ]);
-            const counts = {
-                heart:Number(heart.value || 0),
-                like:Number(like.value || 0),
-                dislike:Number(dislike.value || 0)
-            };
-            saveReactionCache(counts);
-            renderReactionCounts(counts);
-        }catch(err){
-            console.warn('[Website Reactions] read unavailable:',err);
-            // ถ้ามี cache ให้คงค่าล่าสุดไว้ ไม่ทำให้ตัวเลขเด้งหาย
-            if(!cached){
-                Object.values(reactionEls).forEach(el=>{ if(el) el.textContent='—'; });
+        if(
+            location.protocol !== 'https:' ||
+            location.hostname !== EXPECTED_HOST
+        ){
+            return;
+        }
+
+        /*
+         * ทุกครั้งที่เรียกแบบ force=true ให้ถาม server ทันที
+         * ไม่ติด cache TTL เพื่อให้ตัวเลขล่าสุดขึ้นเร็วที่สุด
+         */
+        if(!force && cached){
+            const cachedAt = Number(
+                localStorage.getItem(STORAGE.reactionCountsAt) || 0
+            );
+
+            if(Date.now()-cachedAt < REACTION_CACHE_TTL){
+                return;
             }
         }
+
+        // กันการยิง request ซ้อนกันจาก click/focus/visibility
+        if(reactionSyncPromise) return reactionSyncPromise;
+
+        reactionSyncPromise = (async()=>{
+            try{
+                const [heart,like,dislike] = await Promise.all([
+                    counterRequest(
+                        'vote',
+                        `${REACTION_COUNTER_PREFIX}-reaction-heart`,
+                        {readOnly:'true'}
+                    ),
+                    counterRequest(
+                        'vote',
+                        `${REACTION_COUNTER_PREFIX}-reaction-like`,
+                        {readOnly:'true'}
+                    ),
+                    counterRequest(
+                        'vote',
+                        `${REACTION_COUNTER_PREFIX}-reaction-dislike`,
+                        {readOnly:'true'}
+                    )
+                ]);
+
+                const serverCounts = {
+                    heart:Number(heart.value || 0),
+                    like:Number(like.value || 0),
+                    dislike:Number(dislike.value || 0)
+                };
+
+                /*
+                 * อย่าทับยอด pending ที่ผู้ใช้เพิ่งกดด้วยค่า server ที่ยังเก่า
+                 */
+                saveReactionCache(serverCounts);
+                renderReactionCounts(serverCounts);
+
+            }catch(err){
+                console.warn(
+                    '[Website Reactions] read unavailable:',
+                    err
+                );
+
+                // มี cache อยู่แล้ว ให้คงค่าบนหน้าจอไว้
+                if(!cached){
+                    Object.values(reactionEls).forEach(el=>{
+                        if(el) el.textContent='—';
+                    });
+                }
+            }finally{
+                reactionSyncPromise = null;
+            }
+        })();
+
+        return reactionSyncPromise;
     }
 
     async function handleReactionClick(event){
         const btn = event.currentTarget;
         const reaction = btn.dataset.reaction;
+
         if(!reaction) return;
 
         const already = localStorage.getItem(STORAGE.reaction);
+
         if(already){
             applyReactionSelection(already);
             return;
         }
 
-        if(location.protocol !== 'https:' || location.hostname !== EXPECTED_HOST){
-            if(reactionStatus) reactionStatus.textContent='โหมดทดสอบ Local — ยังไม่ส่งความคิดเห็นจริง';
+        if(
+            location.protocol !== 'https:' ||
+            location.hostname !== EXPECTED_HOST
+        ){
+            if(reactionStatus){
+                reactionStatus.textContent =
+                    'โหมดทดสอบ Local — ยังไม่ส่งความคิดเห็นจริง';
+            }
             return;
         }
 
-        // Local-first: จำทันที เพื่อให้ refresh แล้วสถานะไม่หาย
-        const counts = readReactionCache() || {heart:0,like:0,dislike:0};
-        counts[reaction] = Number(counts[reaction] || 0) + 1;
-        try{ localStorage.setItem(STORAGE.reaction,reaction); }catch(_){ }
+        /*
+         * LOCAL-FIRST
+         * -------------------------------------------------------
+         * แก้ปัญหาหลักของอาการ "กดแล้วค้างที่ 4"
+         *
+         * เดิม:
+         *   cache = 4
+         *   กดหัวใจ
+         *   แสดง 5
+         *   จากนั้น sync API อ่านได้ 4
+         *   แล้วเอา 4 มาทับหน้าจอ
+         *
+         * ใหม่:
+         *   cache = 4
+         *   pending = 1
+         *   หน้าจอ = 4 + 1 = 5
+         *   ถ้า API ยังตอบ 4 ก็ยังแสดง 5
+         *   เมื่อ API กลายเป็น 5 ระบบจะถือว่า sync สำเร็จ
+         */
+        const counts =
+            readReactionCache() ||
+            {heart:0,like:0,dislike:0};
+
+        const pending = readPendingReactions();
+
+        counts[reaction] =
+            Math.max(0,Number(counts[reaction])||0);
+
+        pending[reaction] =
+            Math.max(0,Number(pending[reaction])||0) + 1;
+
+        // จำการเลือกก่อน เพื่อกันการกดซ้ำ
+        try{
+            localStorage.setItem(
+                STORAGE.reaction,
+                reaction
+            );
+        }catch(_){}
+
+        savePendingReactions(pending);
         saveReactionCache(counts);
+
+        // อัปเดตหน้าจอทันที
         renderReactionCounts(counts);
         applyReactionSelection(reaction);
-        if(reactionStatus) reactionStatus.textContent='กำลังบันทึกความคิดเห็น...';
+
+        if(reactionStatus){
+            reactionStatus.textContent =
+                'กำลังบันทึกความคิดเห็น...';
+        }
 
         try{
-            const res = await counterRequest('vote',`${REACTION_COUNTER_PREFIX}-reaction-${reaction}`,{behavior:'vote'},5500);
-            counts[reaction] = Number(res.value || counts[reaction]);
+            const res = await counterRequest(
+                'vote',
+                `${REACTION_COUNTER_PREFIX}-reaction-${reaction}`,
+                {behavior:'vote'},
+                5500
+            );
+
+            const apiValue = Number(res?.value);
+
+            if(Number.isFinite(apiValue)){
+                /*
+                 * CounterAPI บางช่วงอาจตอบค่าก่อน transaction
+                 * จะถูกสะท้อนกลับมาเต็ม ๆ
+                 *
+                 * ถ้า API >= ค่าที่เราเคยคาดไว้:
+                 *     ถือว่า server รับยอดแล้ว -> ล้าง pending
+                 *
+                 * ถ้า API ยังต่ำกว่า:
+                 *     อย่าล้าง pending
+                 *     เพราะจะทำให้ 5 เด้งกลับเป็น 4
+                 */
+                const expected =
+                    (Number(counts[reaction])||0) +
+                    (pending[reaction]||0);
+
+                if(apiValue >= expected){
+                    counts[reaction] = apiValue;
+                    pending[reaction] = 0;
+                }else{
+                    // API ยังคืนค่าค้างอยู่
+                    // คงยอดที่ผู้ใช้เพิ่งกดไว้บนหน้าจอ
+                    counts[reaction] =
+                        Math.max(
+                            Number(counts[reaction])||0,
+                            apiValue
+                        );
+                }
+            }
+
             saveReactionCache(counts);
+            savePendingReactions(pending);
             renderReactionCounts(counts);
-            if(reactionStatus) reactionStatus.textContent='ขอบคุณสำหรับความคิดเห็นของคุณ';
-            // อัปเดตยอดอื่นแบบเบา ๆ หลังบันทึกสำเร็จ
-            setTimeout(()=>syncReactionCounts(true),800);
+
+            if(reactionStatus){
+                if(pending[reaction] > 0){
+                    reactionStatus.textContent =
+                        'บันทึกแล้ว · กำลังซิงค์ยอดออนไลน์';
+                }else{
+                    reactionStatus.textContent =
+                        'ขอบคุณสำหรับความคิดเห็นของคุณ';
+                }
+            }
+
+            /*
+             * ไม่เรียก sync ทันทีหลังโหวตอีกต่อไป
+             * เพราะนี่คือจุดที่ทำให้ยอด 5 ถูก API ค่าเก่า 4 ทับ
+             *
+             * รอให้ระบบภายนอกมีเวลาอัปเดต แล้วค่อยตรวจอีกครั้ง
+             */
+            /*
+             * ซิงค์แบบเร่งด่วนหลายจังหวะ:
+             * 0.8s / 2s / 4s
+             * เพื่อให้ทันทีที่ CounterAPI สะท้อน transaction
+             * ตัวเลขออนไลน์จะอัปเดตโดยไม่ต้องรอ 5 วินาทีเต็ม
+             */
+            [800,2000,4000].forEach(delay=>{
+                setTimeout(()=>{
+                    syncReactionCounts(true);
+                },delay);
+            });
+
         }catch(err){
-            console.warn('[Website Reactions] vote unavailable:',err);
-            // คงสถานะที่ผู้ใช้เลือกไว้ ไม่ให้เด้งหาย แล้วค่อย sync ครั้งถัดไป
-            if(reactionStatus) reactionStatus.textContent='บันทึกบนเครื่องแล้ว · ระบบจะตรวจยอดออนไลน์เมื่อเปิดเว็บครั้งถัดไป';
+            console.warn(
+                '[Website Reactions] vote unavailable:',
+                err
+            );
+
+            /*
+             * ยังคงยอดที่ผู้ใช้กดไว้
+             * ไม่ย้อนจาก 5 กลับเป็น 4
+             */
+            saveReactionCache(counts);
+            savePendingReactions(pending);
+            renderReactionCounts(counts);
+
+            if(reactionStatus){
+                reactionStatus.textContent =
+                    'รับความคิดเห็นแล้ว · รอซิงค์ยอดออนไลน์';
+            }
         }
     }
 
     function initReactions(){
-        const selected = localStorage.getItem(STORAGE.reaction) || '';
+        const selected =
+            localStorage.getItem(STORAGE.reaction) || '';
+
         applyReactionSelection(selected);
+
         const cached = readReactionCache();
-        if(cached) renderReactionCounts(cached);
 
-        document.querySelectorAll('.visitor-reaction-btn').forEach(btn=>{
-            btn.addEventListener('click',handleReactionClick,{passive:false});
-        });
-
-        const run = ()=>syncReactionCounts(false);
-        if('requestIdleCallback' in window){
-            requestIdleCallback(run,{timeout:1800});
-        }else{
-            setTimeout(run,350);
+        if(cached){
+            renderReactionCounts(cached);
         }
+
+        document
+            .querySelectorAll('.visitor-reaction-btn')
+            .forEach(btn=>{
+                btn.addEventListener(
+                    'click',
+                    handleReactionClick,
+                    {passive:false}
+                );
+            });
+
+        /*
+         * ไม่รอ requestIdleCallback:
+         * ส่วน "ความรู้สึกต่อเว็บไซต์" ต้องอ่านยอดออนไลน์ทันที
+         * เมื่อเปิดหน้า
+         */
+        syncReactionCounts(true);
+    }
+
+    function refreshVisitorAndReactions(){
+        loadVisitorStats(true);
+        syncReactionCounts(true);
     }
 
     function init(){
-        loadVisitorStats();
+        // เปิดหน้า = อัปเดตทันที
+        loadVisitorStats(false);
         initReactions();
+
+        const section = document.getElementById('website-visitor-stats');
+        const title = document.querySelector('.visitor-stats-title');
+        const reactionTitle = document.querySelector('.visitor-reactions-title');
+
+        /*
+         * เมื่อผู้ใช้ "เปิดดู/เลื่อนมาถึง" ส่วนสถิติ
+         * ให้ดึงยอดล่าสุดทันที โดยไม่เพิ่ม pageview ซ้ำ
+         */
+        if(section && 'IntersectionObserver' in window){
+            let seen = false;
+
+            const observer = new IntersectionObserver(entries=>{
+                entries.forEach(entry=>{
+                    if(entry.isIntersecting){
+                        if(seen){
+                            refreshVisitorAndReactions();
+                        }
+                        seen = true;
+                    }
+                });
+            },{
+                threshold:0.15
+            });
+
+            observer.observe(section);
+        }
+
+        /*
+         * เมื่อผู้ใช้กดหัวข้อทั้ง 2 จุด:
+         * อัปเดตยอดออนไลน์ทันที โดยไม่เพิ่มยอดเข้าชมซ้ำ
+         */
+        [title,reactionTitle].forEach(el=>{
+            if(!el) return;
+
+            el.style.cursor='pointer';
+            el.addEventListener('click',refreshVisitorAndReactions);
+        });
+
+        /*
+         * กลับมาที่แท็บ / กลับมาที่หน้าเว็บ = refresh ทันที
+         */
+        document.addEventListener('visibilitychange',()=>{
+            if(document.visibilityState==='visible'){
+                refreshVisitorAndReactions();
+            }
+        });
+
+        window.addEventListener('pageshow',()=>{
+            refreshVisitorAndReactions();
+        });
+
+        window.addEventListener('focus',()=>{
+            refreshVisitorAndReactions();
+        });
     }
 
     if(document.readyState==='loading'){
-        document.addEventListener('DOMContentLoaded',init,{once:true});
+        document.addEventListener(
+            'DOMContentLoaded',
+            init,
+            {once:true}
+        );
     }else{
         init();
     }
+
 })();
 </script>
 
