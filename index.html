@@ -14563,3 +14563,24 @@ if(document.readyState==='loading'){
 </script>
 </body>
 </html>
+
+<style id="mobile-horizontal-screen-lock-20260917">
+/* MOBILE SCREEN X-LOCK: prevent the whole page from drifting left/right.
+   Does not disable intentional horizontal scrolling inside tables/scroll containers. */
+@media (max-width: 960px) {
+  html, body {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip !important;
+    overscroll-behavior-x: none;
+  }
+
+  .wrapper,
+  .sidebar,
+  .main {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+}
+</style>
