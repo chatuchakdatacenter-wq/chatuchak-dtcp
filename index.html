@@ -1,3 +1,4 @@
+<!-- DTCP FAILSAFE APPS SCRIPT 20260917: cache-first + tolerant cold-start timeouts -->
 
 <!--
 Google Sheet Headers:
@@ -10078,7 +10079,7 @@ function loadPRNewsJSONP() {
                 </div>
             </div>
         `;
-    }, 8000);
+    }, 20000);
 
     document.body.appendChild(script);
 }
@@ -10294,7 +10295,7 @@ async function loadOutreachActivities() {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 20000); // fail-safe: Apps Script cold start may exceed 8s
 
     try {
         // ใช้ query timestamp กัน cache โดยคงเป็น simple GET
@@ -10491,7 +10492,7 @@ function loadWebSettingsJSONP() {
     webSettingsLoadTimer = setTimeout(function(){
         script.remove();
         webSettingsLoadTimer = null;
-    }, 5000);
+    }, 15000);
     document.body.appendChild(script);
 }
 
@@ -12292,7 +12293,7 @@ async function loadDailyLearning(){
     }catch(e){}
 
     const controller = new AbortController();
-    const timer = setTimeout(()=>controller.abort(),8000);
+    const timer = setTimeout(()=>controller.abort(),20000); // fail-safe: keep cached content while slow refresh continues
 
     try{
         const response = await fetch(getFreshDailyLearningUrl(), {
