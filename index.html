@@ -8965,6 +8965,49 @@ body{padding-bottom:98px!important;}
   .mobile-bottom-nav .km-reference-icon img{width:52px!important;height:52px!important;object-fit:contain!important;display:block!important;filter:none!important;}
 }
 </style>
+
+<!-- MOBILE NAV PERFORMANCE: direct navigation remains native; no JS wait -->
+<link rel="dns-prefetch" href="//chatuchakdatacenter-wq.github.io">
+<style id="mobile-nav-navigation-performance-20260917">
+@media(max-width:960px){
+  .mobile-bottom-nav a{touch-action:manipulation;-webkit-tap-highlight-color:transparent;}
+  .mobile-bottom-nav a[href*="/training-register/"]{cursor:pointer;}
+}
+</style>
+
+<style id="mobile-stability-responsive-fix-20260917">
+/* Mobile stability: prevent horizontal drift, logo/title collisions, and costly effects */
+html,body{width:100%;max-width:100%;overflow-x:hidden!important;overscroll-behavior-x:none;}
+body{touch-action:pan-y;}
+.wrapper,.sidebar,.main{min-width:0!important;max-width:100%!important;}
+img,svg,video,canvas{max-width:100%;}
+@media (max-width:960px){
+  html,body{position:relative;}
+  .wrapper{width:100%!important;overflow-x:clip!important;}
+  .sidebar,.main{width:100%!important;box-sizing:border-box!important;}
+  .sidebar .logo-area{width:100%!important;max-width:100%!important;overflow:hidden!important;}
+  .logo-top{width:100%!important;max-width:100%!important;display:flex!important;justify-content:center!important;align-items:center!important;gap:clamp(10px,3vw,16px)!important;}
+  .logo-top img:nth-child(1),.logo-top img:nth-child(2){width:clamp(72px,23vw,105px)!important;height:clamp(72px,23vw,105px)!important;max-width:28vw!important;object-fit:contain!important;flex:0 1 auto!important;}
+  .mobile-center-title{position:relative!important;z-index:2!important;width:100%!important;max-width:100%!important;padding:0 10px!important;margin:12px auto 0!important;text-align:center!important;font-size:clamp(17px,5.2vw,22px)!important;line-height:1.35!important;letter-spacing:-.25px!important;white-space:normal!important;overflow-wrap:anywhere!important;}
+  .portal-datetime{max-width:100%!important;overflow:hidden!important;}
+  .hero,.hero-left,.hero-image,.cards,.news,.statistics-section,.daily-learning-section,.student-works-section{max-width:100%!important;min-width:0!important;}
+  .hero-left .hero-title{white-space:normal!important;overflow-wrap:anywhere!important;max-width:100%!important;}
+  .hero-image.hero-image-asset-overlay .hero-logo-stack{max-width:20vw!important;right:2%!important;}
+  .hero-image.hero-image-asset-overlay img.hero-overlay-logo-chatuchak,.hero-image.hero-image-asset-overlay img.hero-overlay-logo-bma{max-width:100%!important;height:auto!important;}
+  .daily-lightbox-stage{width:100%!important;max-width:100%!important;}
+  .mobile-bottom-nav{width:100%!important;max-width:100%!important;left:0!important;right:0!important;box-sizing:border-box!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;}
+  .floating-actions{max-width:calc(100vw - 24px)!important;}
+}
+@media (max-width:520px){
+  .logo-top img:nth-child(1),.logo-top img:nth-child(2){width:clamp(66px,22vw,88px)!important;height:clamp(66px,22vw,88px)!important;}
+  .mobile-center-title{font-size:clamp(16px,4.9vw,20px)!important;padding:0 12px!important;}
+  .hero-image.hero-image-asset-overlay .hero-logo-stack{top:8%!important;right:2%!important;width:clamp(28px,8vw,38px)!important;gap:5px!important;}
+}
+@media (hover:none) and (pointer:coarse){
+  .card:hover,.stat-card:hover,.news-thumb:hover,.fab-btn:hover,.daily-learning-view-all:hover{transform:none!important;}
+}
+</style>
+
 </head>
 
 <body>
