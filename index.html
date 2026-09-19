@@ -1936,7 +1936,7 @@ FINAL: Hotline SVG + Document Cards
 }
 
 .docs-list li::before{
-    content:'✓';
+    content:'✅';
     position:absolute;
     left:0;
     top:0;
@@ -4503,7 +4503,7 @@ FINAL QC: Docs Cards Compact Balanced Layout
 }
 
 .docs-card .docs-list li::before{
-    content:'✓' !important;
+    content:'✅' !important;
     position:absolute !important;
     left:0 !important;
     top:0 !important;
@@ -8971,6 +8971,67 @@ body{padding-bottom:98px!important;}
 @media(max-width:960px){
   .mobile-bottom-nav .km-reference-icon{width:52px!important;height:52px!important;display:flex!important;align-items:center!important;justify-content:center!important;}
   .mobile-bottom-nav .km-reference-icon img{width:52px!important;height:52px!important;object-fit:contain!important;display:block!important;filter:none!important;}
+}
+</style>
+
+<!-- FINAL MOBILE HORIZONTAL LOCK + DOCS CHECKMARK 2026-09-19 -->
+<style id="mobile-horizontal-lock-20260919">
+@media (max-width:960px){
+  html, body{
+    width:100% !important;
+    max-width:100% !important;
+    overflow-x:hidden !important;
+    overscroll-behavior-x:none;
+  }
+  .wrapper, .sidebar, .main, main, section{
+    max-width:100% !important;
+  }
+  img, video, iframe, canvas, svg{
+    max-width:100%;
+  }
+}
+/* เอกสารประกอบการสมัคร: ใช้เครื่องหมาย ✅ ทุกข้อ */
+.docs-list li::before,
+.docs-cards .docs-list li::before,
+.docs-card .docs-list li::before{
+  content:'✅' !important;
+  color:inherit !important;
+  text-shadow:none !important;
+  font-size:16px !important;
+  line-height:1.7 !important;
+}
+</style>
+
+
+<style>
+/* FINAL: Visitor globe emoji clarity — 2026-09-19 */
+.visitor-stat-icon.icon-today{
+    background:linear-gradient(145deg,#ffffff 0%,#d7f8ec 48%,#a7e7d1 100%) !important;
+    border:1px solid rgba(5,150,105,.28) !important;
+}
+.visitor-stat-icon.icon-total{
+    background:linear-gradient(145deg,#ffffff 0%,#eee8ff 48%,#cfc0ff 100%) !important;
+    border:1px solid rgba(101,54,215,.24) !important;
+}
+.visitor-stat-icon .nav-emoji,
+.visitor-stat-icon .student-work-icon{
+    position:relative !important;
+    z-index:3 !important;
+    width:auto !important;
+    height:auto !important;
+    border-radius:0 !important;
+    background:transparent !important;
+    font-size:30px !important;
+    line-height:1 !important;
+    transform:none !important;
+    filter:saturate(1.35) contrast(1.12) drop-shadow(0 2px 2px rgba(0,0,0,.16)) !important;
+}
+@media(max-width:760px){
+    .visitor-stat-icon .nav-emoji,
+    .visitor-stat-icon .student-work-icon{
+        font-size:21px !important;
+        filter:saturate(1.4) contrast(1.15) drop-shadow(0 1px 1px rgba(0,0,0,.18)) !important;
+    }
 }
 </style>
 </head>
