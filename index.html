@@ -11631,89 +11631,170 @@ if(document.readyState==='loading'){
      * ใช้ <script> แทน fetch เพื่อหลีกเลี่ยงปัญหา CORS บน GitHub Pages
      * และรองรับทั้ง view / vote / readOnly / behavior ตาม API เดิม
      */
-    function counterRequest(action,key,params={},timeoutMs=7000){
-        return new Promise((resolve,reject)=>{
-            const callbackName =
-                '__dtcpCounterJSONP_' +
-                Date.now() + '_' +
-                (++jsonpSequence);
+    let counterApiReadyPromise = null;
+
+    function loadCounterApi(){
+        if(window.counterApi &&
+           typeof window.counterApi.read === 'function' &&
+           typeof window.counterApi.increment === 'function'){
+            return Promise.resolve(window.counterApi);
+        }
+
+        if(counterApiReadyPromise) return counterApiReadyPromise;
+
+        counterApiReadyPromise = new Promise((resolve,reject)=>{
+            const existing = document.querySelector(
+                'script[data-dtcp-counterapi="true"]'
+            );
+
+            if(existing){
+                const started = Date.now();
+                const check = ()=>{
+                    if(window.counterApi &&
+                       typeof window.counterApi.read === 'function' &&
+                       typeof window.counterApi.increment === 'function'){
+                        resolve(window.counterApi);
+                        return;
+                    }
+
+                    if(Date.now() - started > 10000){
+                        reject(new Error('CounterAPI browser library timeout'));
+                        return;
+                    }
+
+                    setTimeout(check,50);
+                };
+                check();
+                return;
+            }
 
             const script = document.createElement('script');
-
-            const q = new URLSearchParams({
-                noFormatting:'true',
-                _ts:String(Date.now()),
-                callback:callbackName,
-                ...params
-            });
-
-            const url =
-                `${API_BASE}${encodeURIComponent(NAMESPACE)}/` +
-                `${encodeURIComponent(action)}/` +
-                `${encodeURIComponent(key)}?${q.toString()}`;
+            script.src = 'https://counterapi.com/counterapi.embed.js';
+            script.async = true;
+            script.dataset.dtcpCounterapi = 'true';
 
             let settled = false;
+            const timer = setTimeout(()=>{
+                if(settled) return;
+                settled = true;
+                reject(new Error('CounterAPI browser library timeout'));
+            },10000);
 
-            const cleanup = ()=>{
-                clearTimeout(timer);
-
-                try{
-                    delete window[callbackName];
-                }catch(_){
-                    window[callbackName] = undefined;
-                }
-
-                if(script.parentNode){
-                    script.parentNode.removeChild(script);
-                }
-            };
-
-            const finish = (fn,value)=>{
+            script.onload = ()=>{
                 if(settled) return;
 
-                settled = true;
-                cleanup();
-                fn(value);
+                const started = Date.now();
+                const check = ()=>{
+                    if(window.counterApi &&
+                       typeof window.counterApi.read === 'function' &&
+                       typeof window.counterApi.increment === 'function'){
+                        settled = true;
+                        clearTimeout(timer);
+                        resolve(window.counterApi);
+                        return;
+                    }
+
+                    if(Date.now() - started > 5000){
+                        settled = true;
+                        clearTimeout(timer);
+                        reject(new Error('CounterAPI library loaded but API is unavailable'));
+                        return;
+                    }
+
+                    setTimeout(check,50);
+                };
+                check();
             };
-
-            const timer = setTimeout(()=>{
-                finish(
-                    reject,
-                    new Error('CounterAPI JSONP timeout')
-                );
-            },timeoutMs);
-
-            window[callbackName] = data=>{
-                if(!data || typeof data !== 'object'){
-                    finish(
-                        reject,
-                        new Error('CounterAPI returned invalid JSONP data')
-                    );
-                    return;
-                }
-
-                if(data.error){
-                    finish(
-                        reject,
-                        new Error(String(data.error))
-                    );
-                    return;
-                }
-
-                finish(resolve,data);
-            };
-
-            script.async = true;
-            script.src = url;
 
             script.onerror = ()=>{
-                finish(
-                    reject,
-                    new Error('CounterAPI JSONP network error')
-                );
+                if(settled) return;
+                settled = true;
+                clearTimeout(timer);
+                reject(new Error('CounterAPI browser library network error'));
             };
 
             document.head.appendChild(script);
+        }).catch(err=>{
+            counterApiReadyPromise = null;
+            throw err;
+        });
+
+        return counterApiReadyPromise;
+    }
+
+    function counterRequest(action,key,params={},timeoutMs=7000){
+        return new Promise(async (resolve,reject)=>{
+            let timer = null;
+            let settled = false;
+
+            const finish = (fn,value)=>{
+                if(settled) return;
+                settled = true;
+                if(timer) clearTimeout(timer);
+                fn(value);
+            };
+
+            timer = setTimeout(()=>{
+                finish(reject,new Error('CounterAPI request timeout'));
+            },timeoutMs);
+
+            try{
+                const api = await loadCounterApi();
+                if(settled) return;
+
+                const readOnly = String(params?.readOnly || '') === 'true';
+                const behavior = params?.behavior ||
+                    (action === 'vote' ? 'vote' : 'view');
+
+                const callback = (err,res)=>{
+                    if(err){
+                        finish(reject,err instanceof Error ? err : new Error(String(err)));
+                        return;
+                    }
+
+                    if(!res || typeof res !== 'object'){
+                        finish(reject,new Error('CounterAPI returned invalid data'));
+                        return;
+                    }
+
+                    finish(resolve,res);
+                };
+
+                /*
+                 * ใช้ browser library ของ CounterAPI โดยตรงแทน JSONP
+                 * - read() = อ่านอย่างเดียว
+                 * - increment() = เพิ่ม counter 1 ครั้ง
+                 * วิธีนี้เป็น integration ที่ CounterAPI ระบุไว้ในเอกสาร
+                 * และไม่ต้องสร้าง <script> JSONP ทุก request
+                 */
+                if(readOnly){
+                    api.read(
+                        key,
+                        action,
+                        NAMESPACE,
+                        {
+                            ...params,
+                            readOnly:true,
+                            noFormatting:true
+                        },
+                        callback
+                    );
+                }else{
+                    api.increment(
+                        key,
+                        action,
+                        NAMESPACE,
+                        {
+                            ...params,
+                            behavior:behavior,
+                            noFormatting:true
+                        },
+                        callback
+                    );
+                }
+            }catch(err){
+                finish(reject,err instanceof Error ? err : new Error(String(err)));
+            }
         });
     }
 
