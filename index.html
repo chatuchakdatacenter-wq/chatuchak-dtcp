@@ -9344,7 +9344,7 @@ async function loadOutreachActivities() {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000); // fail-safe: Apps Script cold start may exceed 8s
+    const timeoutId = setTimeout(() => controller.abort('outreach-timeout'), 12000); // bounded wait: keep portal responsive
 
     try {
         // ใช้ query timestamp กัน cache โดยคงเป็น simple GET
@@ -9362,7 +9362,12 @@ async function loadOutreachActivities() {
         renderOutreachActivities(data);
 
     } catch (error) {
-        console.error('Load outreach activity failed:', error);
+        // AbortError จาก timeout เป็น fail-safe ที่คาดไว้ ไม่ใช่ application error
+        if (error && error.name === 'AbortError') {
+            console.info('[Outreach] request timed out; keeping cached content.');
+        } else {
+            console.warn('[Outreach] load failed; keeping cached content when available:', error);
+        }
 
         if (cachedData && cachedData.length) return;
 
@@ -11577,6 +11582,8 @@ if(document.readyState==='loading'){
     };
 
     const REACTION_CACHE_TTL = 30 * 1000;
+    const VISITOR_CACHE_KEY = 'dtcpVisitorStatsLastGoodV1';
+    const VISITOR_REQUEST_TIMEOUT_MS = 5000;
 
     let reactionSyncPromise = null;
     let jsonpSequence = 0;
@@ -11605,6 +11612,30 @@ if(document.readyState==='loading'){
         if(STATUS){
             STATUS.textContent = message;
         }
+    }
+
+    function readVisitorCache(){
+        try{
+            const data = JSON.parse(localStorage.getItem(VISITOR_CACHE_KEY) || 'null');
+            if(!data || !Number.isFinite(Number(data.today)) || !Number.isFinite(Number(data.total))) return null;
+            return data;
+        }catch(_){ return null; }
+    }
+
+    function writeVisitorCache(today,total){
+        try{
+            localStorage.setItem(VISITOR_CACHE_KEY, JSON.stringify({
+                today:Number(today), total:Number(total), savedAt:Date.now()
+            }));
+        }catch(_){}
+    }
+
+    function renderVisitorCache(){
+        const cached = readVisitorCache();
+        if(!cached) return false;
+        setValue(visitorEls.today,cached.today);
+        setValue(visitorEls.total,cached.total);
+        return true;
     }
 
     function datePartsBangkok(){
@@ -11728,7 +11759,7 @@ if(document.readyState==='loading'){
      * ใช้ endpoint โดยตรงตามเอกสาร CounterAPI แทนการพึ่ง embed library
      * เพื่อลดปัญหา library โหลดช้า/timeout และ CORS บน GitHub Pages
      */
-    function counterRequest(action,key,params={},timeoutMs=9000){
+    function counterRequest(action,key,params={},timeoutMs=VISITOR_REQUEST_TIMEOUT_MS){
         return new Promise((resolve,reject)=>{
             const callbackName = `__dtcpCounterCb_${Date.now()}_${++jsonpSequence}`;
             const script = document.createElement('script');
@@ -11803,6 +11834,7 @@ if(document.readyState==='loading'){
         }
 
         const d = datePartsBangkok();
+        const hadCachedStats = renderVisitorCache();
 
         if(STATUS){
             STATUS.textContent = forceRefresh
@@ -11837,6 +11869,9 @@ if(document.readyState==='loading'){
 
             setValue(visitorEls.today,today?.value);
             setValue(visitorEls.total,total?.value);
+            if(Number.isFinite(Number(today?.value)) && Number.isFinite(Number(total?.value))){
+                writeVisitorCache(today.value,total.value);
+            }
 
             if(STATUS){
                 STATUS.textContent =
@@ -11849,12 +11884,12 @@ if(document.readyState==='loading'){
                 err
             );
 
-            if(STATUS){
-                STATUS.textContent =
-                    'ระบบสถิติไม่พร้อมชั่วคราว · กำลังรอการเชื่อมต่อใหม่';
-            }
-
-            if(!forceRefresh){
+            const hasFallback = hadCachedStats || renderVisitorCache();
+            if(hasFallback){
+                if(STATUS){
+                    STATUS.textContent = 'แสดงสถิติล่าสุดที่บันทึกไว้ · ระบบออนไลน์ตอบสนองชั่วคราวไม่ได้';
+                }
+            }else{
                 setVisitorUnavailable(
                     'ระบบสถิติไม่พร้อมชั่วคราว · หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ'
                 );
