@@ -11754,57 +11754,60 @@ if(document.readyState==='loading'){
     }
 
     /*
-     * CounterAPI request — resilient JSONP transport
+     * CounterAPI request — official browser-library transport
      * ---------------------------------------------------------
-     * ใช้ endpoint โดยตรงตามเอกสาร CounterAPI แทนการพึ่ง embed library
-     * เพื่อลดปัญหา library โหลดช้า/timeout และ CORS บน GitHub Pages
+     * ใช้ counterapi.embed.js + counterApi.read/increment ตามเอกสารผู้ให้บริการ
+     * คง namespace / action / key เดิมทั้งหมด เพื่อรักษายอดเดิม
      */
-    function counterRequest(action,key,params={},timeoutMs=VISITOR_REQUEST_TIMEOUT_MS){
-        return new Promise((resolve,reject)=>{
-            const callbackName = `__dtcpCounterCb_${Date.now()}_${++jsonpSequence}`;
-            const script = document.createElement('script');
+    function counterRequest(action,key,params={},timeoutMs=7000){
+        return new Promise(async (resolve,reject)=>{
+            let timer = null;
             let settled = false;
-
-            const cleanup = ()=>{
-                try{ delete window[callbackName]; }
-                catch(_){ window[callbackName] = undefined; }
-                if(script.parentNode) script.parentNode.removeChild(script);
-            };
 
             const finish = (fn,value)=>{
                 if(settled) return;
                 settled = true;
-                clearTimeout(timer);
-                cleanup();
+                if(timer) clearTimeout(timer);
                 fn(value);
             };
 
-            window[callbackName] = (res)=>{
-                if(!res || typeof res !== 'object'){
-                    finish(reject,new Error('CounterAPI returned invalid data'));
-                    return;
-                }
-                finish(resolve,res);
-            };
-
-            const query = new URLSearchParams();
-            Object.entries(params || {}).forEach(([k,v])=>{
-                if(v !== undefined && v !== null && v !== '') query.set(k,String(v));
-            });
-            query.set('callback',callbackName);
-            query.set('noFormatting','true');
-            query.set('_ts',String(Date.now()));
-
-            script.src = `${API_BASE}${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(action)}/${encodeURIComponent(key)}?${query.toString()}`;
-            script.async = true;
-            script.referrerPolicy = 'strict-origin-when-cross-origin';
-            script.onerror = ()=>finish(reject,new Error('CounterAPI JSONP network error'));
-
-            const timer = setTimeout(()=>{
-                finish(reject,new Error('CounterAPI JSONP timeout'));
+            timer = setTimeout(()=>{
+                finish(reject,new Error('CounterAPI request timeout'));
             },timeoutMs);
 
-            document.head.appendChild(script);
+            try{
+                const api = await loadCounterApi();
+                if(settled) return;
+
+                const readOnly = String(params?.readOnly || '') === 'true';
+                const behavior = params?.behavior || (action === 'vote' ? 'vote' : 'view');
+                const options = {
+                    ...params,
+                    noFormatting:true
+                };
+
+                const callback = (err,res)=>{
+                    if(err){
+                        finish(reject,err instanceof Error ? err : new Error(String(err)));
+                        return;
+                    }
+                    if(!res || typeof res !== 'object'){
+                        finish(reject,new Error('CounterAPI returned invalid data'));
+                        return;
+                    }
+                    finish(resolve,res);
+                };
+
+                if(readOnly){
+                    options.readOnly = true;
+                    api.read(key, action, NAMESPACE, options, callback);
+                }else{
+                    options.behavior = behavior;
+                    api.increment(key, action, NAMESPACE, options, callback);
+                }
+            }catch(err){
+                finish(reject,err instanceof Error ? err : new Error(String(err)));
+            }
         });
     }
 
@@ -12129,7 +12132,7 @@ if(document.readyState==='loading'){
 
             }catch(err){
                 console.warn(
-                    '[Website Reactions] CounterAPI JSONP read unavailable:',
+                    '[Website Reactions] CounterAPI read unavailable:',
                     err
                 );
 
@@ -12268,7 +12271,7 @@ if(document.readyState==='loading'){
 
         }catch(err){
             console.warn(
-                '[Website Reactions] CounterAPI JSONP vote unavailable:',
+                '[Website Reactions] CounterAPI vote unavailable:',
                 err
             );
 
