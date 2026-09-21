@@ -9661,15 +9661,15 @@ function startRemoteContentLoading() {
     observer.observe(document.documentElement, {childList:true, subtree:true});
 })();
 
-if (document.readyState === 'loading') {
-    document.addEventListener(
-        'DOMContentLoaded',
-        startRemoteContentLoading,
-        { once: true }
-    );
-} else {
-    startRemoteContentLoading();
+// STARTUP ARCHITECTURE 2026-09-21:
+// Do not compete with the browser's initial document/image load.
+// Remote JSONP/fetch content starts only after the native load event has completed.
+function scheduleRemoteContentAfterPageLoad() {
+    const run = () => window.setTimeout(startRemoteContentLoading, 600);
+    if (document.readyState === 'complete') run();
+    else window.addEventListener('load', run, { once: true });
 }
+scheduleRemoteContentAfterPageLoad();
 </script>
 <!-- FLOATING ACTIONS -->
 <div class="floating-actions">
@@ -9921,7 +9921,11 @@ ${listHTML}
 }
 }
 
-document.addEventListener('DOMContentLoaded', loadAIDashboard);
+if(document.readyState==='complete'){
+    window.setTimeout(loadAIDashboard,1800);
+}else{
+    window.addEventListener('load',()=>window.setTimeout(loadAIDashboard,1800),{once:true});
+}
 </script>
 <div aria-hidden="true" class="result-modal-backdrop" id="resultAnnouncementModal">
 <div aria-labelledby="resultModalTitle" aria-modal="true" class="result-modal" role="dialog">
@@ -10720,7 +10724,7 @@ function setResultAnnouncementButtonState(status){
     }
 }
 
-document.addEventListener('DOMContentLoaded', async function(){
+window.addEventListener('load', async function(){
     const RESULT_API =
     'https://script.google.com/macros/s/AKfycbzEFmGU8my2GSnlxxLASGqyonXjieetOaHQeNFQ-v4SIfdW1IE8-BSIZ5DIQLz7TAwh/exec?action=nameCheck';
 
@@ -11468,14 +11472,16 @@ document.addEventListener('keydown',e=>{
     if(e.key==='ArrowRight') stepDailyLearningLightbox(1);
 });
 
-if(document.readyState==='loading'){
-    document.addEventListener('DOMContentLoaded',()=>{
-        loadDailyLearning();
-        window.setInterval(()=>{if(!document.hidden) loadDailyLearning();},120000);
-    },{once:true});
-}else{
-    loadDailyLearning();
+function startDailyLearningBackgroundSync(){
+    // Preserve the existing cache-first renderer, but keep its network request
+    // out of the initial page-load path to reduce startup contention.
+    window.setTimeout(()=>loadDailyLearning(), 1200);
     window.setInterval(()=>{if(!document.hidden) loadDailyLearning();},120000);
+}
+if(document.readyState==='complete'){
+    startDailyLearningBackgroundSync();
+}else{
+    window.addEventListener('load',startDailyLearningBackgroundSync,{once:true});
 }
 </script>
 <section aria-label="สถิติการเข้าชมเว็บไซต์" class="visitor-stats-section" id="website-visitor-stats">
