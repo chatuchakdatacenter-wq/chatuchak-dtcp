@@ -11546,21 +11546,13 @@ if(document.readyState==='loading'){
     console.info('[DTCP BUILD]', DTCP_BUILD);
 
     const EXPECTED_HOST = 'chatuchakdatacenter-wq.github.io';
-    const NAMESPACE = 'chatuchakdatacenter-wq.github.io';
+    const WEBSITE_STATS_API = 'https://script.google.com/macros/s/AKfycbyptllPIcUitNocl4r992ALypMiN4dqubY5h11LDNEdj_cMZhPTmC7PCn5O2wEEl8Km/exec';
 
     /*
-     * CounterAPI (counterapi.com)
-     * ---------------------------------------------------------
-     * แก้ปัญหา CORS/Fetch โดยใช้ JSONP ตาม API ที่รองรับโดยตรง
-     * ไม่เปลี่ยน namespace หรือ counter key เดิม
-     *
-     * หมายเหตุ:
-     * - เว็บไซต์จริงบน GitHub Pages เท่านั้นจึงบันทึกสถิติ
-     * - เปิดไฟล์แบบ file:// จะไม่ยิงสถิติจริง
+     * Native website statistics — Apps Script V26 + Google Sheet
+     * เว็บไซต์จริงบน GitHub Pages เท่านั้นจึงบันทึกสถิติ
+     * เปิดไฟล์แบบ file:// จะไม่เพิ่มยอดจริง
      */
-    const API_BASE = 'https://counterapi.com/api/';
-    const VISITOR_COUNTER_PREFIX = 'dtcp-pageviews-v1-20260912';
-    const REACTION_COUNTER_PREFIX = 'dtcp-v2-20260912';
 
     const STATUS = document.getElementById('visitorStatsStatus');
 
@@ -11659,27 +11651,7 @@ if(document.readyState==='loading'){
         };
     }
 
-    /*
-     * CounterAPI JSONP
-     * ---------------------------------------------------------
-     * ใช้ <script> แทน fetch เพื่อหลีกเลี่ยงปัญหา CORS บน GitHub Pages
-     * และรองรับทั้ง view / vote / readOnly / behavior ตาม API เดิม
-     */
-    /*
-     * CounterAPI transport — direct JSONP endpoint
-     * ---------------------------------------------------------
-     * ใช้ endpoint ที่ CounterAPI ระบุในเอกสารโดยตรง:
-     * /api/{namespace}/{action}/{key}?callback=...
-     *
-     * เหตุผลที่ไม่ใช้ counterapi.embed.js:
-     * browser library ของผู้ให้บริการระบุ dependency เป็น jQuery
-     * แต่ portal นี้ไม่ได้โหลด jQuery จึงมีโอกาส library โหลดสำเร็จ
-     * แต่ callback ของ read/increment ไม่ตอบกลับจน timeout
-     *
-     * วิธีนี้ไม่เปลี่ยน namespace/action/key จึงอ้างถึง counter เดิม
-     * และไม่สร้าง counter ชุดใหม่
-     */
-
+    /* Apps Script JSONP transport: avoids CORS issues on GitHub Pages. */
     function websiteStatsRequest(params={},timeoutMs=12000){
         return new Promise((resolve,reject)=>{
             const cb='__dtcpStats_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2);
