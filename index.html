@@ -8747,7 +8747,7 @@ PR NEWS AUTO LOAD - JSONP MODE
 Google Sheet: PR_News
 ========================= */
 
-const PR_NEWS_BASE_URL = 'https://script.google.com/macros/s/AKfycbyhTOS2x9xKLCCWTlXpfYRd1_tysMu2aVge8i9r8ag1Fri3jteaRWkoZx5xVp38D3kd/exec';
+const PR_NEWS_BASE_URL = 'https://script.google.com/macros/s/AKfycbzEFmGU8my2GSnlxxLASGqyonXjieetOaHQeNFQ-v4SIfdW1IE8-BSIZ5DIQLz7TAwh/exec';
 
 const DTCP_CACHE_KEYS = {
     prNews: 'dtcp_pr_news_v1',
@@ -9135,7 +9135,7 @@ function loadPRNewsJSONP() {
 
 
 const OUTREACH_ACTIVITY_API =
-'https://script.google.com/macros/s/AKfycbyhTOS2x9xKLCCWTlXpfYRd1_tysMu2aVge8i9r8ag1Fri3jteaRWkoZx5xVp38D3kd/exec?action=outreachActivity';
+'https://script.google.com/macros/s/AKfycbzEFmGU8my2GSnlxxLASGqyonXjieetOaHQeNFQ-v4SIfdW1IE8-BSIZ5DIQLz7TAwh/exec?action=outreachActivity';
 
 function getFreshOutreachActivityUrl() {
     const joiner = OUTREACH_ACTIVITY_API.includes('?') ? '&' : '?';
@@ -9941,7 +9941,7 @@ document.addEventListener('DOMContentLoaded', loadAIDashboard);
 </div>
 </div>
 <script>
-const RESULT_ANNOUNCEMENT_API = 'https://script.google.com/macros/s/AKfycbyhTOS2x9xKLCCWTlXpfYRd1_tysMu2aVge8i9r8ag1Fri3jteaRWkoZx5xVp38D3kd/exec?action=nameCheck';
+const RESULT_ANNOUNCEMENT_API = 'https://script.google.com/macros/s/AKfycbzEFmGU8my2GSnlxxLASGqyonXjieetOaHQeNFQ-v4SIfdW1IE8-BSIZ5DIQLz7TAwh/exec?action=nameCheck';
 let resultAnnouncementCache = null;
 
 function resultEscapeHTML(value){
@@ -10722,7 +10722,7 @@ function setResultAnnouncementButtonState(status){
 
 document.addEventListener('DOMContentLoaded', async function(){
     const RESULT_API =
-    'https://script.google.com/macros/s/AKfycbyhTOS2x9xKLCCWTlXpfYRd1_tysMu2aVge8i9r8ag1Fri3jteaRWkoZx5xVp38D3kd/exec?action=nameCheck';
+    'https://script.google.com/macros/s/AKfycbzEFmGU8my2GSnlxxLASGqyonXjieetOaHQeNFQ-v4SIfdW1IE8-BSIZ5DIQLz7TAwh/exec?action=nameCheck';
 
     try{
         const response = await fetch(RESULT_API);
@@ -11045,7 +11045,7 @@ window.toggleReadMore = function(index){
    description | location | image1...image20 | status | sortOrder
    ========================================================= */
 const DAILY_LEARNING_API =
-    'https://script.google.com/macros/s/AKfycbyhTOS2x9xKLCCWTlXpfYRd1_tysMu2aVge8i9r8ag1Fri3jteaRWkoZx5xVp38D3kd/exec?action=dailyLearning';
+    'https://script.google.com/macros/s/AKfycbzEFmGU8my2GSnlxxLASGqyonXjieetOaHQeNFQ-v4SIfdW1IE8-BSIZ5DIQLz7TAwh/exec?action=dailyLearning';
 const DAILY_LEARNING_CACHE_KEY = 'dtcp_daily_learning_v4_social_gallery';
 let dailyLearningImages = [];
 let dailyLearningLightboxIndex = 0;
