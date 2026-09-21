@@ -11542,7 +11542,7 @@ if(document.readyState==='loading'){
 (function(){
     'use strict';
 
-    const DTCP_BUILD = '2026-09-21 NATIVE-SHEET-STATS-FINAL';
+    const DTCP_BUILD = '2026-09-21 NATIVE-SHEET-STATS-STARTUP-OPTIMIZED';
     console.info('[DTCP BUILD]', DTCP_BUILD);
 
     const EXPECTED_HOST = 'chatuchakdatacenter-wq.github.io';
@@ -11737,13 +11737,25 @@ if(document.readyState==='loading'){
         const selected=localStorage.getItem(STORAGE.reaction)||'';applyReactionSelection(selected);
         const cached=readReactionCache();if(cached)renderReactionCounts(cached);
         document.querySelectorAll('.visitor-reaction-btn').forEach(btn=>btn.addEventListener('click',handleReactionClick,{passive:false}));
-        syncReactionCounts(true);
+        // Startup network read removed: the pageview response already contains reaction counts.
     }
 
-    function refreshVisitorAndReactions(){loadVisitorStats(true);syncReactionCounts(true);}
+    function refreshVisitorAndReactions(){
+        // One read is enough: loadVisitorStats() also renders data.reactions.
+        return loadVisitorStats(true);
+    }
+
+    function startInitialStatsAfterPageLoad(){
+        const run=()=>window.setTimeout(()=>loadVisitorStats(false),250);
+        if(document.readyState==='complete') run();
+        else window.addEventListener('load',run,{once:true});
+    }
 
     function init(){
-        loadVisitorStats(false);initReactions();
+        // Paint last-good values immediately, but keep the Apps Script request out of the initial page load path.
+        renderVisitorCache();
+        initReactions();
+        startInitialStatsAfterPageLoad();
         const section=document.getElementById('website-visitor-stats');
         const title=document.querySelector('.visitor-stats-title');
         const reactionTitle=document.querySelector('.visitor-reactions-title');
