@@ -13475,5 +13475,322 @@ if(document.readyState==='loading'){
   .sidebar .menu > a > .menu-label,
   .sidebar .menu > a > .km-menu-text { font-size: 12px !important; }
 }
+
+<!-- =========================================================
+     VISITOR STATS PATCH v2 · 2026-09-21
+     วางท้ายไฟล์ได้เลย ไม่ต้องลบ script เก่า
+     จุดประสงค์:
+     - แก้ IntersectionObserver ที่ทำงานแค่ครั้งแรก
+     - เพิ่ม AbortController กัน Request ซ้อน
+     - Neutralize script เก่าอย่างปลอดภัย
+     ========================================================= -->
+<script id="visitorStatsPatchV2">
+(function(){
+    'use strict';
+
+    console.log('[VisitorStats PATCH v2] เริ่มทำงาน...');
+
+    // ============================================================
+    // STEP 1: Neutralize ตัวแปร global ของ script เก่า
+    // ============================================================
+    try {
+        // ทำให้ loadVisitorStats เวอร์ชันเก่าไม่ทำงาน
+        // (script ใหม่จะใช้ชื่อ loadVisitorStatsV2 แทน)
+        if (typeof window.loadVisitorStats === 'function') {
+            window.__oldLoadVisitorStats = window.loadVisitorStats;
+            window.loadVisitorStats = function(){
+                console.log('[VisitorStats PATCH] บล็อก loadVisitorStats เก่า');
+                return Promise.resolve();
+            };
+        }
+    } catch(e) {
+        console.warn('[VisitorStats PATCH] Neutralize old script:', e);
+    }
+
+    // ============================================================
+    // STEP 2: ตั้งค่าคงที่
+    // ============================================================
+    const EXPECTED_HOST = 'chatuchakdatacenter-wq.github.io';
+    const NAMESPACE = 'chatuchakdatacenter-wq.github.io';
+    const API_BASE = 'https://counterapi.com/api/';
+    const VISITOR_COUNTER_PREFIX = 'dtcp-pageviews-v1-20260912';
+
+    const STATUS = document.getElementById('visitorStatsStatus');
+    const visitorEls = {
+        today: document.getElementById('visitorToday'),
+        total: document.getElementById('visitorTotal')
+    };
+
+    // ============================================================
+    // STEP 3: Helper functions
+    // ============================================================
+    function setValue(el, value){
+        if(!el) return;
+        el.classList.remove('is-loading','is-error');
+        const n = Number(value);
+        el.textContent = Number.isFinite(n)
+            ? n.toLocaleString('th-TH')
+            : '—';
+    }
+
+    function setVisitorUnavailable(message){
+        Object.values(visitorEls).forEach(el=>{
+            if(!el) return;
+            el.classList.remove('is-loading');
+            el.classList.add('is-error');
+            el.textContent='—';
+        });
+        if(STATUS) STATUS.textContent = message;
+    }
+
+    function datePartsBangkok(){
+        const parts = new Intl.DateTimeFormat('en-CA',{
+            timeZone:'Asia/Bangkok',
+            year:'numeric',
+            month:'2-digit',
+            day:'2-digit'
+        }).formatToParts(new Date()).reduce((a,p)=>{
+            a[p.type]=p.value;
+            return a;
+        },{});
+        return {
+            day:`${parts.year}-${parts.month}-${parts.day}`,
+            month:`${parts.year}-${parts.month}`,
+            year:`${parts.year}`
+        };
+    }
+
+    // ============================================================
+    // STEP 4: Request พร้อม AbortController
+    // ============================================================
+    let currentAbortController = null;
+
+    async function counterRequestV2(action, key, params = {}, timeoutMs = 5500){
+        // ยกเลิก request เก่าที่ยังค้างอยู่
+        if (currentAbortController) {
+            currentAbortController.abort();
+        }
+        currentAbortController = new AbortController();
+        const signal = currentAbortController.signal;
+
+        const q = new URLSearchParams({
+            noFormatting: 'true',
+            _ts: String(Date.now()),
+            ...params
+        });
+
+        const url =
+            `${API_BASE}${encodeURIComponent(NAMESPACE)}/` +
+            `${encodeURIComponent(action)}/` +
+            `${encodeURIComponent(key)}?${q.toString()}`;
+
+        const timer = setTimeout(() => {
+            if (currentAbortController) currentAbortController.abort();
+        }, timeoutMs);
+
+        try {
+            const res = await fetch(url, {
+                cache: 'no-store',
+                mode: 'cors',
+                signal: signal,
+                referrerPolicy: 'strict-origin-when-cross-origin'
+            });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return await res.json();
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                console.log('[VisitorStats PATCH] Request aborted (superseded)');
+                return null;
+            }
+            throw err;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    // ============================================================
+    // STEP 5: Logic หลัก
+    // ============================================================
+    let isRefreshing = false;
+    let hasLoadedOnce = false;
+
+    async function loadVisitorStatsV2(forceRefresh = false){
+        if (location.protocol !== 'https:' || location.hostname !== EXPECTED_HOST) {
+            setVisitorUnavailable('โหมดทดสอบ Local — ไม่บันทึกสถิติจริง');
+            return;
+        }
+
+        // กันเรียกซ้อน
+        if (isRefreshing) {
+            console.log('[VisitorStats PATCH] กำลัง refresh อยู่ ข้ามรอบนี้');
+            return;
+        }
+        if (!forceRefresh && hasLoadedOnce) return;
+
+        isRefreshing = true;
+        if (!forceRefresh) hasLoadedOnce = true;
+
+        const d = datePartsBangkok();
+
+        if (STATUS) {
+            STATUS.textContent = forceRefresh
+                ? 'กำลังอัปเดตสถิติการเข้าชม...'
+                : 'กำลังโหลดสถิติการเข้าชม...';
+        }
+
+        try {
+            const readParams = forceRefresh ? { readOnly: 'true' } : {};
+
+            const results = await Promise.all([
+                counterRequestV2('view', `${VISITOR_COUNTER_PREFIX}-day-${d.day}`, readParams),
+                counterRequestV2('view', `${VISITOR_COUNTER_PREFIX}-month-${d.month}`, readParams),
+                counterRequestV2('view', `${VISITOR_COUNTER_PREFIX}-year-${d.year}`, readParams),
+                counterRequestV2('view', `${VISITOR_COUNTER_PREFIX}-total`, readParams)
+            ]);
+
+            // ตรวจสอบว่าไม่ถูก abort
+            if (results.every(r => r && typeof r.value !== 'undefined')) {
+                const [today, month, year, total] = results;
+                setValue(visitorEls.today, today.value);
+                setValue(visitorEls.total, total.value);
+
+                if (STATUS) {
+                    STATUS.textContent = 'อัปเดตล่าสุดจากระบบสถิติออนไลน์ · เวลาไทย';
+                }
+                console.log('[VisitorStats PATCH] อัปเดตตัวเลขสำเร็จ:',
+                    { today: today.value, total: total.value });
+            } else {
+                console.log('[VisitorStats PATCH] ผลลัพธ์ไม่ครบ (ถูก abort) — คงค่าเดิม');
+            }
+
+        } catch (err) {
+            console.warn('[VisitorStats PATCH] unavailable:', err);
+
+            if (STATUS) {
+                STATUS.textContent = 'ระบบสถิติไม่พร้อมชั่วคราว · กำลังรอการเชื่อมต่อใหม่';
+            }
+
+            if (!forceRefresh) {
+                setVisitorUnavailable('ระบบสถิติไม่พร้อมชั่วคราว · หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ');
+            }
+        } finally {
+            isRefreshing = false;
+        }
+    }
+
+    // ============================================================
+    // STEP 6: ล้าง Event Listener เก่าโดยการ Clone element
+    // ============================================================
+    function removeOldListenersAndInstallNew(){
+        const section = document.getElementById('website-visitor-stats');
+        if (!section) {
+            console.warn('[VisitorStats PATCH] ไม่พบ section#website-visitor-stats');
+            return;
+        }
+
+        // Clone ปุ่ม Reactions ทั้งหมด เพื่อล้าง listener เก่า
+        // (เพราะ script เก่าได้ผูก handleReactionClick ไว้)
+        // **แต่เราไม่สนใจ reactions ใน Patch นี้ — ปล่อยให้ script เก่าจัดการไป**
+        // เราแค่ neutralize loadVisitorStats() ก็พอ
+
+        // **หมายเหตุ**: เราไม่แตะปุ่ม reaction เพราะ script เก่าทำงานได้ปกติอยู่แล้ว
+        // ปัญหาอยู่ที่ visitor stats เท่านั้น
+    }
+
+    // ============================================================
+    // STEP 7: IntersectionObserver ใหม่ (ทำงานทุกครั้งที่เห็น)
+    // ============================================================
+    function installIntersectionObserver(){
+        const section = document.getElementById('website-visitor-stats');
+        if (!section || !('IntersectionObserver' in window)) return;
+
+        const observer = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    console.log('[VisitorStats PATCH] Section เข้ามาในหน้าจอ → refresh');
+                    loadVisitorStatsV2(true);
+                }
+            });
+        }, {
+            threshold: 0.15
+        });
+
+        observer.observe(section);
+        console.log('[VisitorStats PATCH] ติดตั้ง IntersectionObserver ใหม่เรียบร้อย');
+    }
+
+    // ============================================================
+    // STEP 8: ผูก Event ใหม่ (clone element เพื่อล้างของเก่า)
+    // ============================================================
+    function rebindClickEvents(){
+        const title = document.querySelector('.visitor-stats-title');
+        const reactionTitle = document.querySelector('.visitor-reactions-title');
+
+        // Clone + Replace เพื่อล้าง event listener เก่าออก
+        if (title) {
+            const newTitle = title.cloneNode(true);
+            title.parentNode.replaceChild(newTitle, title);
+            newTitle.style.cursor = 'pointer';
+            newTitle.addEventListener('click', () => {
+                console.log('[VisitorStats PATCH] คลิกหัวข้อ → refresh');
+                loadVisitorStatsV2(true);
+            });
+        }
+
+        // ไม่แตะ reactionTitle — ปล่อยให้ script เก่าจัดการ
+        // เพราะการกดหัวข้อ reactions ยังต้องทำงานคู่กับ syncReactionCounts()
+        // ซึ่งเราไม่ได้ patch ในนี้
+    }
+
+    // ============================================================
+    // STEP 9: ผูก Event ตอนสลับแท็บ/กลับมาหน้า
+    // ============================================================
+    function bindVisibilityEvents(){
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                console.log('[VisitorStats PATCH] กลับมาที่แท็บ → refresh');
+                loadVisitorStatsV2(true);
+            }
+        });
+
+        window.addEventListener('pageshow', () => {
+            console.log('[VisitorStats PATCH] pageshow → refresh');
+            loadVisitorStatsV2(true);
+        });
+
+        window.addEventListener('focus', () => {
+            console.log('[VisitorStats PATCH] focus → refresh');
+            loadVisitorStatsV2(true);
+        });
+    }
+
+    // ============================================================
+    // STEP 10: เริ่มทำงาน
+    // ============================================================
+    function boot(){
+        console.log('[VisitorStats PATCH v2] Boot...');
+        rebindClickEvents();
+        installIntersectionObserver();
+        bindVisibilityEvents();
+
+        // โหลดครั้งแรก (ไม่ force — จะบันทึก view ครั้งเดียว)
+        loadVisitorStatsV2(false);
+
+        // Force refresh ครั้งที่สองหลัง 2 วินาที
+        // เพื่อให้เห็นค่าล่าสุดหลัง script เก่าโหลดเสร็จ
+        setTimeout(() => {
+            console.log('[VisitorStats PATCH] Force refresh รอบที่ 2');
+            loadVisitorStatsV2(true);
+        }, 2000);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot, { once: true });
+    } else {
+        boot();
+    }
+
+})();
+</script>    
 </style></body>
 </html>
