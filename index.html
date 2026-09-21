@@ -11542,7 +11542,7 @@ if(document.readyState==='loading'){
 (function(){
     'use strict';
 
-    const DTCP_BUILD = '2026-09-21 COUNTERAPI-DIRECT-JSONP-V6';
+    const DTCP_BUILD = '2026-09-21 NATIVE-SHEET-STATS-FINAL';
     console.info('[DTCP BUILD]', DTCP_BUILD);
 
     const EXPECTED_HOST = 'chatuchakdatacenter-wq.github.io';
@@ -11679,680 +11679,112 @@ if(document.readyState==='loading'){
      * วิธีนี้ไม่เปลี่ยน namespace/action/key จึงอ้างถึง counter เดิม
      * และไม่สร้าง counter ชุดใหม่
      */
-    let counterJsonpSequence = 0;
 
-    function counterRequest(action,key,params={},timeoutMs=10000){
+    function websiteStatsRequest(params={},timeoutMs=12000){
         return new Promise((resolve,reject)=>{
-            const callbackName =
-                '__dtcpCounterApiCb_' + Date.now() + '_' + (++counterJsonpSequence);
-
-            const script = document.createElement('script');
-            script.async = true;
-            script.dataset.dtcpCounterapiRequest = 'true';
-
-            let settled = false;
-            let timer = null;
-
-            const cleanup = ()=>{
-                if(timer) clearTimeout(timer);
-                try{ delete window[callbackName]; }
-                catch(_){ window[callbackName] = undefined; }
-                try{ script.remove(); }catch(_){}
-            };
-
-            const finish = (fn,value)=>{
-                if(settled) return;
-                settled = true;
-                cleanup();
-                fn(value);
-            };
-
-            window[callbackName] = function(response){
-                if(!response || typeof response !== 'object'){
-                    finish(reject,new Error('CounterAPI returned invalid JSONP data'));
-                    return;
-                }
-                finish(resolve,response);
-            };
-
-            const query = new URLSearchParams();
-            Object.entries(params || {}).forEach(([name,value])=>{
-                if(value === undefined || value === null || value === '') return;
-                query.set(name,String(value));
-            });
-            query.set('noFormatting','true');
-            query.set('callback',callbackName);
-            query.set('_ts',String(Date.now()));
-
-            script.src =
-                API_BASE +
-                encodeURIComponent(NAMESPACE) + '/' +
-                encodeURIComponent(action) + '/' +
-                encodeURIComponent(key) + '?' +
-                query.toString();
-
-            script.onerror = ()=>{
-                finish(reject,new Error('CounterAPI JSONP network error'));
-            };
-
-            timer = setTimeout(()=>{
-                finish(reject,new Error('CounterAPI JSONP timeout'));
-            },Math.max(3000,Number(timeoutMs) || 10000));
-
-            document.head.appendChild(script);
+            const cb='__dtcpStats_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2);
+            const script=document.createElement('script');
+            let done=false;
+            const cleanup=()=>{try{delete window[cb];}catch(_){window[cb]=undefined;} if(script.parentNode)script.parentNode.removeChild(script);};
+            const timer=setTimeout(()=>{if(done)return;done=true;cleanup();reject(new Error('Website stats timeout'));},timeoutMs);
+            window[cb]=data=>{if(done)return;done=true;clearTimeout(timer);cleanup();if(!data||data.success!==true){reject(new Error((data&&data.error)||'Website stats unavailable'));return;}resolve(data);};
+            const qs=new URLSearchParams(Object.assign({action:'websiteStats',callback:cb,_ts:String(Date.now())},params));
+            script.async=true; script.src=WEBSITE_STATS_API+'?'+qs.toString();
+            script.onerror=()=>{if(done)return;done=true;clearTimeout(timer);cleanup();reject(new Error('Website stats network error'));};
+            document.body.appendChild(script);
         });
     }
 
     async function loadVisitorStats(forceRefresh=false){
-        if(
-            location.protocol !== 'https:' ||
-            location.hostname !== EXPECTED_HOST
-        ){
-            setVisitorUnavailable(
-                'โหมดทดสอบ Local — ไม่บันทึกสถิติจริง'
-            );
-            return;
-        }
-
-        if(!forceRefresh && window.__dtcpVisitorRequested){
-            return;
-        }
-
-        if(forceRefresh && window.__dtcpVisitorRefreshing){
-            return;
-        }
-
-        if(forceRefresh){
-            window.__dtcpVisitorRefreshing = true;
-        }else{
-            window.__dtcpVisitorRequested = true;
-        }
-
-        const d = datePartsBangkok();
-        const hadCachedStats = renderVisitorCache();
-
-        if(STATUS){
-            STATUS.textContent = forceRefresh
-                ? 'กำลังอัปเดตสถิติการเข้าชม...'
-                : 'กำลังโหลดสถิติการเข้าชม...';
-        }
-
+        if(location.protocol!=='https:'||location.hostname!==EXPECTED_HOST){setVisitorUnavailable('โหมดทดสอบ Local — ไม่บันทึกสถิติจริง');return;}
+        if(!forceRefresh&&window.__dtcpVisitorRequested)return;
+        if(forceRefresh&&window.__dtcpVisitorRefreshing)return;
+        if(forceRefresh)window.__dtcpVisitorRefreshing=true;else window.__dtcpVisitorRequested=true;
+        const hadCachedStats=renderVisitorCache();
+        if(STATUS)STATUS.textContent=forceRefresh?'กำลังอัปเดตสถิติการเข้าชม...':'กำลังโหลดสถิติการเข้าชม...';
         try{
-            /*
-             * เปิดหน้า:
-             *   view = เพิ่ม pageview 1 ครั้ง
-             *
-             * refresh:
-             *   view + readOnly=true = อ่านอย่างเดียว
-             */
-            const readParams = forceRefresh
-                ? {readOnly:'true'}
-                : {};
-
-            const [today,total] = await Promise.all([
-                counterRequest(
-                    'view',
-                    `${VISITOR_COUNTER_PREFIX}-day-${d.day}`,
-                    readParams
-                ),
-                counterRequest(
-                    'view',
-                    `${VISITOR_COUNTER_PREFIX}-total`,
-                    readParams
-                )
-            ]);
-
-            setValue(visitorEls.today,today?.value);
-            setValue(visitorEls.total,total?.value);
-            if(Number.isFinite(Number(today?.value)) && Number.isFinite(Number(total?.value))){
-                writeVisitorCache(today.value,total.value);
-            }
-
-            if(STATUS){
-                STATUS.textContent =
-                    'อัปเดตล่าสุดจากระบบสถิติออนไลน์ · เวลาไทย';
-            }
-
+            const data=await websiteStatsRequest({mode:forceRefresh?'read':'pageview'});
+            setValue(visitorEls.today,data.today);setValue(visitorEls.total,data.total);
+            if(Number.isFinite(Number(data.today))&&Number.isFinite(Number(data.total)))writeVisitorCache(data.today,data.total);
+            if(data.reactions){saveReactionCache(data.reactions);renderReactionCounts(data.reactions);}
+            if(STATUS)STATUS.textContent='อัปเดตล่าสุดจากระบบสถิติออนไลน์ · เวลาไทย';
         }catch(err){
-            console.warn(
-                '[Visitor Stats] CounterAPI unavailable:',
-                err
-            );
-
-            const hasFallback = hadCachedStats || renderVisitorCache();
-            if(hasFallback){
-                if(STATUS){
-                    STATUS.textContent = 'แสดงสถิติล่าสุดที่บันทึกไว้ · ระบบออนไลน์ตอบสนองชั่วคราวไม่ได้';
-                }
-            }else{
-                setVisitorUnavailable(
-                    'ระบบสถิติไม่พร้อมชั่วคราว · หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ'
-                );
-            }
-
-        }finally{
-            if(forceRefresh){
-                window.__dtcpVisitorRefreshing = false;
-            }
-        }
+            console.warn('[Visitor Stats] native stats unavailable:',err);
+            const hasFallback=hadCachedStats||renderVisitorCache();
+            if(hasFallback){if(STATUS)STATUS.textContent='แสดงสถิติล่าสุดที่บันทึกไว้ · ระบบออนไลน์ตอบสนองชั่วคราวไม่ได้';}
+            else setVisitorUnavailable('ระบบสถิติไม่พร้อมชั่วคราว · หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ');
+        }finally{if(forceRefresh)window.__dtcpVisitorRefreshing=false;}
     }
 
-    function readReactionCache(){
-        try{
-            const raw =
-                localStorage.getItem(STORAGE.reactionCounts);
-
-            const parsed = raw
-                ? JSON.parse(raw)
-                : null;
-
-            return parsed && typeof parsed === 'object'
-                ? parsed
-                : null;
-
-        }catch(_){
-            return null;
-        }
-    }
-
-    function saveReactionCache(counts){
-        try{
-            localStorage.setItem(
-                STORAGE.reactionCounts,
-                JSON.stringify(counts)
-            );
-
-            localStorage.setItem(
-                STORAGE.reactionCountsAt,
-                String(Date.now())
-            );
-
-        }catch(_){}
-    }
-
-    function readPendingReactions(){
-        try{
-            const raw =
-                localStorage.getItem(STORAGE.reactionPending);
-
-            const parsed = raw
-                ? JSON.parse(raw)
-                : null;
-
-            if(!parsed || typeof parsed !== 'object'){
-                return {
-                    heart:0,
-                    like:0,
-                    dislike:0
-                };
-            }
-
-            return {
-                heart:Math.max(0,Number(parsed.heart)||0),
-                like:Math.max(0,Number(parsed.like)||0),
-                dislike:Math.max(0,Number(parsed.dislike)||0)
-            };
-
-        }catch(_){
-            return {
-                heart:0,
-                like:0,
-                dislike:0
-            };
-        }
-    }
-
-    function savePendingReactions(pending){
-        try{
-            localStorage.setItem(
-                STORAGE.reactionPending,
-                JSON.stringify({
-                    heart:Math.max(
-                        0,
-                        Number(pending.heart)||0
-                    ),
-                    like:Math.max(
-                        0,
-                        Number(pending.like)||0
-                    ),
-                    dislike:Math.max(
-                        0,
-                        Number(pending.dislike)||0
-                    )
-                })
-            );
-        }catch(_){}
-    }
-
-    function getDisplayCounts(serverCounts){
-        if(!serverCounts){
-            return null;
-        }
-
-        const pending = readPendingReactions();
-
-        return {
-            heart:Math.max(
-                Number(serverCounts.heart)||0,
-                (Number(serverCounts.heart)||0) + pending.heart
-            ),
-            like:Math.max(
-                Number(serverCounts.like)||0,
-                (Number(serverCounts.like)||0) + pending.like
-            ),
-            dislike:Math.max(
-                Number(serverCounts.dislike)||0,
-                (Number(serverCounts.dislike)||0) + pending.dislike
-            )
-        };
-    }
+    function readReactionCache(){try{const raw=localStorage.getItem(STORAGE.reactionCounts);const p=raw?JSON.parse(raw):null;return p&&typeof p==='object'?p:null;}catch(_){return null;}}
+    function saveReactionCache(counts){try{localStorage.setItem(STORAGE.reactionCounts,JSON.stringify(counts));localStorage.setItem(STORAGE.reactionCountsAt,String(Date.now()));}catch(_){}}
 
     function renderReactionCounts(counts){
-        if(!counts) return;
-
-        const display = getDisplayCounts(counts);
-
-        ['heart','like','dislike'].forEach(name=>{
-            if(
-                display &&
-                display[name] != null
-            ){
-                setValue(
-                    reactionEls[name],
-                    display[name]
-                );
-            }
-        });
+        if(!counts)return;
+        ['heart','like','dislike'].forEach(k=>{if(reactionEls[k])reactionEls[k].textContent=Number(counts[k]||0).toLocaleString('th-TH');});
     }
 
     function applyReactionSelection(selected){
-        document
-            .querySelectorAll('.visitor-reaction-btn')
-            .forEach(btn=>{
-                const same =
-                    btn.dataset.reaction === selected;
-
-                btn.classList.toggle(
-                    'is-selected',
-                    same
-                );
-
-                btn.classList.toggle(
-                    'is-locked',
-                    !!selected && !same
-                );
-
-                btn.disabled = !!selected;
-
-                btn.setAttribute(
-                    'aria-pressed',
-                    same ? 'true' : 'false'
-                );
-            });
-
-        if(
-            selected &&
-            reactionStatus
-        ){
-            reactionStatus.textContent =
-                'บันทึกความคิดเห็นของคุณแล้ว';
-        }
+        document.querySelectorAll('.visitor-reaction-btn').forEach(btn=>{
+            const active=btn.dataset.reaction===selected;
+            btn.classList.toggle('is-selected',active);
+            btn.setAttribute('aria-pressed',active?'true':'false');
+            if(selected)btn.classList.toggle('is-disabled',!active);else btn.classList.remove('is-disabled');
+        });
     }
 
-    async function syncReactionCounts(force=false){
-        const cached = readReactionCache();
-
-        if(cached){
-            renderReactionCounts(cached);
-        }
-
-        if(
-            location.protocol !== 'https:' ||
-            location.hostname !== EXPECTED_HOST
-        ){
-            return;
-        }
-
-        if(!force && cached){
-            const cachedAt = Number(
-                localStorage.getItem(
-                    STORAGE.reactionCountsAt
-                ) || 0
-            );
-
-            if(
-                Date.now() - cachedAt <
-                REACTION_CACHE_TTL
-            ){
-                return;
-            }
-        }
-
-        if(reactionSyncPromise){
-            return reactionSyncPromise;
-        }
-
-        reactionSyncPromise = (async()=>{
-            try{
-                const [heart,like,dislike] =
-                    await Promise.all([
-                        counterRequest(
-                            'vote',
-                            `${REACTION_COUNTER_PREFIX}-reaction-heart`,
-                            {readOnly:'true'}
-                        ),
-                        counterRequest(
-                            'vote',
-                            `${REACTION_COUNTER_PREFIX}-reaction-like`,
-                            {readOnly:'true'}
-                        ),
-                        counterRequest(
-                            'vote',
-                            `${REACTION_COUNTER_PREFIX}-reaction-dislike`,
-                            {readOnly:'true'}
-                        )
-                    ]);
-
-                const serverCounts = {
-                    heart:Number(heart?.value || 0),
-                    like:Number(like?.value || 0),
-                    dislike:Number(dislike?.value || 0)
-                };
-
-                saveReactionCache(serverCounts);
-                renderReactionCounts(serverCounts);
-
-            }catch(err){
-                console.warn(
-                    '[Website Reactions] CounterAPI read unavailable:',
-                    err
-                );
-
-                if(!cached){
-                    Object.values(reactionEls)
-                        .forEach(el=>{
-                            if(el){
-                                el.textContent='—';
-                            }
-                        });
-                }
-
-            }finally{
-                reactionSyncPromise = null;
-            }
-        })();
-
+    function syncReactionCounts(force=false){
+        const cached=readReactionCache();if(cached)renderReactionCounts(cached);
+        if(location.protocol!=='https:'||location.hostname!==EXPECTED_HOST)return;
+        if(!force&&cached){const at=Number(localStorage.getItem(STORAGE.reactionCountsAt)||0);if(Date.now()-at<REACTION_CACHE_TTL)return;}
+        if(reactionSyncPromise)return reactionSyncPromise;
+        reactionSyncPromise=(async()=>{try{const data=await websiteStatsRequest({mode:'read'});const counts=data.reactions||{heart:0,like:0,dislike:0};saveReactionCache(counts);renderReactionCounts(counts);}
+        catch(err){console.warn('[Website Reactions] native stats unavailable:',err);if(!cached)Object.values(reactionEls).forEach(el=>{if(el)el.textContent='—';});}
+        finally{reactionSyncPromise=null;}})();
         return reactionSyncPromise;
     }
 
     async function handleReactionClick(event){
-        const btn = event.currentTarget;
-        const reaction = btn.dataset.reaction;
-
-        if(!reaction) return;
-
-        const already =
-            localStorage.getItem(STORAGE.reaction);
-
-        if(already){
-            applyReactionSelection(already);
-            return;
-        }
-
-        if(
-            location.protocol !== 'https:' ||
-            location.hostname !== EXPECTED_HOST
-        ){
-            if(reactionStatus){
-                reactionStatus.textContent =
-                    'โหมดทดสอบ Local — ยังไม่ส่งความคิดเห็นจริง';
-            }
-            return;
-        }
-
-        const counts =
-            readReactionCache() || {
-                heart:0,
-                like:0,
-                dislike:0
-            };
-
-        const pending =
-            readPendingReactions();
-
-        counts[reaction] =
-            Math.max(
-                0,
-                Number(counts[reaction]) || 0
-            );
-
-        pending[reaction] =
-            Math.max(
-                0,
-                Number(pending[reaction]) || 0
-            ) + 1;
-
+        const reaction=event.currentTarget.dataset.reaction;if(!reaction)return;
+        const already=localStorage.getItem(STORAGE.reaction);if(already){applyReactionSelection(already);return;}
+        if(location.protocol!=='https:'||location.hostname!==EXPECTED_HOST){if(reactionStatus)reactionStatus.textContent='โหมดทดสอบ Local — ยังไม่ส่งความคิดเห็นจริง';return;}
         try{
-            localStorage.setItem(
-                STORAGE.reaction,
-                reaction
-            );
-        }catch(_){}
-
-        savePendingReactions(pending);
-        saveReactionCache(counts);
-
-        renderReactionCounts(counts);
-        applyReactionSelection(reaction);
-
-        if(reactionStatus){
-            reactionStatus.textContent =
-                'กำลังบันทึกความคิดเห็น...';
-        }
-
-        try{
-            const res = await counterRequest(
-                'vote',
-                `${REACTION_COUNTER_PREFIX}-reaction-${reaction}`,
-                {behavior:'vote'},
-                7000
-            );
-
-            const apiValue = Number(res?.value);
-
-            if(Number.isFinite(apiValue)){
-                const expected =
-                    (Number(counts[reaction]) || 0) +
-                    (pending[reaction] || 0);
-
-                if(apiValue >= expected){
-                    counts[reaction] = apiValue;
-                    pending[reaction] = 0;
-                }else{
-                    counts[reaction] =
-                        Math.max(
-                            Number(counts[reaction]) || 0,
-                            apiValue
-                        );
-                }
-            }
-
-            saveReactionCache(counts);
-            savePendingReactions(pending);
-            renderReactionCounts(counts);
-
-            if(reactionStatus){
-                if(pending[reaction] > 0){
-                    reactionStatus.textContent =
-                        'บันทึกแล้ว · กำลังซิงค์ยอดออนไลน์';
-                }else{
-                    reactionStatus.textContent =
-                        'ขอบคุณสำหรับความคิดเห็นของคุณ';
-                }
-            }
-
-            /*
-             * ตรวจยอดซ้ำหลัง transaction มีเวลาสะท้อนกลับ
-             * โดยไม่ทำให้ยอดที่เพิ่งกดเด้งกลับ
-             */
-            [800,2000,4000].forEach(delay=>{
-                setTimeout(()=>{
-                    syncReactionCounts(true);
-                },delay);
-            });
-
+            localStorage.setItem(STORAGE.reaction,reaction);applyReactionSelection(reaction);
+            if(reactionStatus)reactionStatus.textContent='กำลังบันทึกความคิดเห็น...';
+            const data=await websiteStatsRequest({mode:'reaction',reaction});
+            const counts=data.reactions||{heart:0,like:0,dislike:0};saveReactionCache(counts);renderReactionCounts(counts);
+            if(reactionStatus)reactionStatus.textContent='ขอบคุณสำหรับความคิดเห็นของคุณ';
         }catch(err){
-            console.warn(
-                '[Website Reactions] CounterAPI vote unavailable:',
-                err
-            );
-
-            saveReactionCache(counts);
-            savePendingReactions(pending);
-            renderReactionCounts(counts);
-
-            if(reactionStatus){
-                reactionStatus.textContent =
-                    'รับความคิดเห็นแล้ว · รอซิงค์ยอดออนไลน์';
-            }
+            console.warn('[Website Reactions] native stats unavailable:',err);
+            try{localStorage.removeItem(STORAGE.reaction);}catch(_){} applyReactionSelection('');
+            if(reactionStatus)reactionStatus.textContent='ยังบันทึกไม่ได้ กรุณาลองใหม่';
         }
     }
 
     function initReactions(){
-        const selected =
-            localStorage.getItem(STORAGE.reaction) || '';
-
-        applyReactionSelection(selected);
-
-        const cached = readReactionCache();
-
-        if(cached){
-            renderReactionCounts(cached);
-        }
-
-        document
-            .querySelectorAll('.visitor-reaction-btn')
-            .forEach(btn=>{
-                btn.addEventListener(
-                    'click',
-                    handleReactionClick,
-                    {passive:false}
-                );
-            });
-
+        const selected=localStorage.getItem(STORAGE.reaction)||'';applyReactionSelection(selected);
+        const cached=readReactionCache();if(cached)renderReactionCounts(cached);
+        document.querySelectorAll('.visitor-reaction-btn').forEach(btn=>btn.addEventListener('click',handleReactionClick,{passive:false}));
         syncReactionCounts(true);
     }
 
-    function refreshVisitorAndReactions(){
-        loadVisitorStats(true);
-        syncReactionCounts(true);
-    }
+    function refreshVisitorAndReactions(){loadVisitorStats(true);syncReactionCounts(true);}
 
     function init(){
-        /*
-         * เปิดหน้า = เพิ่ม pageview เพียงครั้งเดียว
-         * แล้วอ่านยอด reaction พร้อมกัน
-         */
-        loadVisitorStats(false);
-        initReactions();
-
-        const section =
-            document.getElementById(
-                'website-visitor-stats'
-            );
-
-        const title =
-            document.querySelector(
-                '.visitor-stats-title'
-            );
-
-        const reactionTitle =
-            document.querySelector(
-                '.visitor-reactions-title'
-            );
-
-        /*
-         * เมื่อเลื่อนกลับมาถึงส่วนสถิติ:
-         * อ่านยอดล่าสุด แต่ไม่เพิ่ม pageview
-         */
-        if(
-            section &&
-            'IntersectionObserver' in window
-        ){
-            let seen = false;
-
-            const observer =
-                new IntersectionObserver(
-                    entries=>{
-                        entries.forEach(entry=>{
-                            if(entry.isIntersecting){
-                                if(seen){
-                                    refreshVisitorAndReactions();
-                                }
-
-                                seen = true;
-                            }
-                        });
-                    },
-                    {
-                        threshold:0.15
-                    }
-                );
-
+        loadVisitorStats(false);initReactions();
+        const section=document.getElementById('website-visitor-stats');
+        const title=document.querySelector('.visitor-stats-title');
+        const reactionTitle=document.querySelector('.visitor-reactions-title');
+        if(section&&'IntersectionObserver' in window){
+            let seen=false;
+            const observer=new IntersectionObserver(entries=>{entries.forEach(entry=>{if(entry.isIntersecting){if(seen)refreshVisitorAndReactions();seen=true;}});},{threshold:.15});
             observer.observe(section);
         }
-
-        /*
-         * คลิกหัวข้อ = refresh ตัวเลขล่าสุด
-         * โดยไม่เพิ่ม pageview
-         */
-        [title,reactionTitle].forEach(el=>{
-            if(!el) return;
-
-            el.style.cursor='pointer';
-
-            el.addEventListener(
-                'click',
-                refreshVisitorAndReactions
-            );
-        });
-
-        /*
-         * กลับมาแท็บ / focus / pageshow = อ่านยอดล่าสุด
-         */
-        document.addEventListener(
-            'visibilitychange',
-            ()=>{
-                if(
-                    document.visibilityState ===
-                    'visible'
-                ){
-                    refreshVisitorAndReactions();
-                }
-            }
-        );
-
-        window.addEventListener(
-            'pageshow',
-            refreshVisitorAndReactions
-        );
-
-        window.addEventListener(
-            'focus',
-            refreshVisitorAndReactions
-        );
+        [title,reactionTitle].forEach(el=>{if(!el)return;el.style.cursor='pointer';el.addEventListener('click',refreshVisitorAndReactions);});
+        let lastRefresh=0;
+        document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible')return;const now=Date.now();if(now-lastRefresh<30000)return;lastRefresh=now;refreshVisitorAndReactions();});
     }
-
-    if(document.readyState === 'loading'){
-        document.addEventListener(
-            'DOMContentLoaded',
-            init,
-            {once:true}
-        );
-    }else{
-        init();
-    }
-
+    if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
 })();
 </script>
 <footer class="copyright-footer">
