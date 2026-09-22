@@ -9060,74 +9060,89 @@ function togglePRDetail(button) {
 }
 
 let prNewsLoadTimer = null;
+let prNewsRequestSequence = 0;
+let prNewsRequestInProgress = false;
 
 function loadPRNewsJSONP() {
+    const container = document.getElementById('prNewsContainer');
+    const cachedData = readLocalDataCache(DTCP_CACHE_KEYS.prNews);
 
-    const container =
-        document.getElementById('prNewsContainer');
-
-    const cachedData =
-        readLocalDataCache(DTCP_CACHE_KEYS.prNews);
-
-    if (cachedData && cachedData.length) {
+    // Cache-first: paint immediately only when PR has not already rendered.
+    if (cachedData && cachedData.length && !prNewsRenderSignature) {
         renderPRNews(cachedData);
     }
 
-    const oldScript =
-        document.getElementById('prNewsJsonpScript');
+    // Never allow overlapping PR requests from startup/retry/visibility events.
+    if (prNewsRequestInProgress) return;
+    prNewsRequestInProgress = true;
 
-    if (oldScript) {
-        oldScript.remove();
+    const requestId = ++prNewsRequestSequence;
+    const callbackName = '__dtcpPRNewsCallback_' + requestId;
+    const script = document.createElement('script');
+    script.id = 'prNewsJsonpScript_' + requestId;
+    script.async = true;
+
+    let settled = false;
+
+    function hasUsableContent() {
+        return !!(
+            (cachedData && cachedData.length) ||
+            (prNewsRenderSignature && container && container.children.length)
+        );
     }
 
-    if (prNewsLoadTimer) {
-        clearTimeout(prNewsLoadTimer);
-        prNewsLoadTimer = null;
-    }
-
-    const originalRender = window.renderPRNews;
-
-    window.renderPRNews = function(data) {
+    function cleanup() {
         if (prNewsLoadTimer) {
             clearTimeout(prNewsLoadTimer);
             prNewsLoadTimer = null;
         }
-        originalRender(data);
+        script.onerror = null;
+        script.remove();
+        try { delete window[callbackName]; }
+        catch (_) { window[callbackName] = undefined; }
+        prNewsRequestInProgress = false;
+    }
+
+    window[callbackName] = function(data) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        renderPRNews(data);
     };
-
-    const script =
-        document.createElement('script');
-
-    script.id =
-        'prNewsJsonpScript';
-
-    script.src =
-        PR_NEWS_BASE_URL + '?action=prNews&callback=renderPRNews';
 
     script.onerror = function() {
-        if (prNewsLoadTimer) {
-            clearTimeout(prNewsLoadTimer);
-            prNewsLoadTimer = null;
-        }
-        handlePRNewsError();
+        if (settled) return;
+        settled = true;
+        const keepExisting = hasUsableContent();
+        cleanup();
+        // Network failure must not erase cached/previously rendered public content.
+        if (!keepExisting) handlePRNewsError();
     };
 
+    // Unique callback + cache buster avoids stale JSONP and callback-wrapper buildup.
+    script.src = PR_NEWS_BASE_URL +
+        '?action=prNews&callback=' + encodeURIComponent(callbackName) +
+        '&_ts=' + Date.now();
+
     prNewsLoadTimer = setTimeout(function() {
-        script.remove();
-        if (!container) return;
-        if (cachedData && cachedData.length) return;
-        container.innerHTML = `
-            <div class="news-item">
-                <div class="news-left">
-                    <div class="news-icon">⚠</div>
-                    <div>
-                        <h4>การเชื่อมต่อข่าวประชาสัมพันธ์ล่าช้า</h4>
-                        <p>หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ</p>
-                        <button type="button" class="pr-readmore" onclick="loadPRNewsJSONP()">ลองโหลดข่าวอีกครั้ง</button>
+        if (settled) return;
+        settled = true;
+        const keepExisting = hasUsableContent();
+        cleanup();
+        if (!keepExisting && container) {
+            container.innerHTML = `
+                <div class="news-item">
+                    <div class="news-left">
+                        <div class="news-icon">⚠</div>
+                        <div>
+                            <h4>การเชื่อมต่อข่าวประชาสัมพันธ์ล่าช้า</h4>
+                            <p>หน้าเว็บส่วนอื่นยังใช้งานได้ตามปกติ</p>
+                            <button type="button" class="pr-readmore" onclick="loadPRNewsJSONP()">ลองโหลดข่าวอีกครั้ง</button>
+                        </div>
                     </div>
                 </div>
-            </div>
-        `;
+            `;
+        }
     }, 20000);
 
     document.body.appendChild(script);
@@ -9557,26 +9572,23 @@ function refreshAutoUpdateContent() {
     // ไม่ยิง request ขณะผู้ใช้ย่อแท็บ/สลับไปหน้าอื่น
     if (document.hidden) return;
 
-    // HOT: อ่าน WebSettings ใหม่ทุกครั้ง
+    // HOT เป็น payload เล็ก จึงตรวจสอบก่อน
     loadWebSettingsJSONP();
 
-    // กิจกรรมเพื่อประชาชน: อัปเดต sortOrder / isUpdate /
-    // รูปภาพ / ข้อความ / รายการใหม่ โดยไม่ reload ทั้งหน้า
-    loadOutreachActivities();
+    // แยก Outreach ออกจาก WebSettings เล็กน้อย ลดการชน request ในรอบ polling
+    window.setTimeout(function () {
+        if (!document.hidden) loadOutreachActivities();
+    }, 900);
 }
 
 function startRemoteContentLoading() {
-    // WebSettings ก่อน เพราะเล็กและใช้ควบคุม HOT
+    // Critical remote content only: เริ่มเร็วที่ DOMContentLoaded
+    // เพื่อไม่ให้ PR ต้องรอรูปภาพทั้งหน้าเหมือน window.load
     loadWebSettingsJSONP();
 
-    // กระจาย request อื่นเล็กน้อย เพื่อลดอาการเปิดหน้าแล้วเครือข่ายหมุนพร้อมกันหลายชุด
     window.setTimeout(function () {
         loadPRNewsJSONP();
     }, 150);
-
-    window.setTimeout(function () {
-        loadOutreachActivities();
-    }, 550);
 
     // ป้องกัน interval ซ้ำ หากฟังก์ชันถูกเรียกมากกว่าหนึ่งครั้ง
     if (dtcpAutoUpdateTimer) {
@@ -9661,15 +9673,22 @@ function startRemoteContentLoading() {
     observer.observe(document.documentElement, {childList:true, subtree:true});
 })();
 
-// STARTUP ARCHITECTURE 2026-09-21:
-// Do not compete with the browser's initial document/image load.
-// Remote JSONP/fetch content starts only after the native load event has completed.
-function scheduleRemoteContentAfterPageLoad() {
-    const run = () => window.setTimeout(startRemoteContentLoading, 600);
-    if (document.readyState === 'complete') run();
-    else window.addEventListener('load', run, { once: true });
+// HYBRID STARTUP 2026-09-22:
+// Critical/lightweight content (HOT + PR) starts at DOMContentLoaded.
+// Heavier Google Sheet requests remain staggered after native window.load.
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startRemoteContentLoading, { once: true });
+} else {
+    startRemoteContentLoading();
 }
-scheduleRemoteContentAfterPageLoad();
+
+function startOutreachAfterPageLoad() {
+    window.setTimeout(function () {
+        if (!document.hidden) loadOutreachActivities();
+    }, 2800);
+}
+if (document.readyState === 'complete') startOutreachAfterPageLoad();
+else window.addEventListener('load', startOutreachAfterPageLoad, { once: true });
 </script>
 <!-- FLOATING ACTIONS -->
 <div class="floating-actions">
@@ -9922,9 +9941,9 @@ ${listHTML}
 }
 
 if(document.readyState==='complete'){
-    window.setTimeout(loadAIDashboard,1800);
+    window.setTimeout(loadAIDashboard,6500);
 }else{
-    window.addEventListener('load',()=>window.setTimeout(loadAIDashboard,1800),{once:true});
+    window.addEventListener('load',()=>window.setTimeout(loadAIDashboard,6500),{once:true});
 }
 </script>
 <div aria-hidden="true" class="result-modal-backdrop" id="resultAnnouncementModal">
@@ -11473,15 +11492,19 @@ document.addEventListener('keydown',e=>{
 });
 
 function startDailyLearningBackgroundSync(){
-    // Preserve the existing cache-first renderer, but keep its network request
-    // out of the initial page-load path to reduce startup contention.
-    window.setTimeout(()=>loadDailyLearning(), 1200);
+    // DAILY LEARNING RELIABILITY FIX 2026-09-22:
+    // Do not wait for window.load. A slow/broken image elsewhere can delay that
+    // event and prevent Daily Learning from starting at all. Start from DOM ready
+    // instead, while retaining the stagger so PR/HOT can load first.
+    window.setTimeout(()=>{
+        if(!document.hidden) loadDailyLearning();
+    }, 4500);
     window.setInterval(()=>{if(!document.hidden) loadDailyLearning();},120000);
 }
-if(document.readyState==='complete'){
-    startDailyLearningBackgroundSync();
+if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',startDailyLearningBackgroundSync,{once:true});
 }else{
-    window.addEventListener('load',startDailyLearningBackgroundSync,{once:true});
+    startDailyLearningBackgroundSync();
 }
 </script>
 <section aria-label="สถิติการเข้าชมเว็บไซต์" class="visitor-stats-section" id="website-visitor-stats">
