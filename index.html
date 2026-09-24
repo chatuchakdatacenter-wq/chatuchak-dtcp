@@ -11319,7 +11319,7 @@ async function loadDailyLearning(){
         }else{
             // ข้อมูลเดิม: ไม่ rebuild DOM/รูปภาพ แค่อัปเดตข้อความสถานะ
             const status = document.querySelector('#dailyLearningCard .daily-learning-status-row');
-            if(status) status.textContent = 'ข้อมูลเป็นปัจจุบัน · ตรวจสอบอัตโนมัติทุก 2 นาที';
+            if(status) status.textContent = 'Data is current · Automatically updated every 2 minutes';
         }
         if(latest){
             localStorage.setItem(
