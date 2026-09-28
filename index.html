@@ -8318,6 +8318,23 @@ body{padding-bottom:98px!important;}
     font-weight: 900 !important;
 }
 </style>
+
+<style id="docs-course-label-colors-20260928">
+/* เน้นเฉพาะชื่อประเภทวิชา โดยคงขนาดเดียวกับข้อความใน badge */
+.docs-card .docs-course-label{
+    font-size: 1em !important;
+    line-height: inherit !important;
+    font-weight: 800 !important;
+    letter-spacing: inherit !important;
+}
+.docs-general-card .docs-course-general{
+    color: #2563eb !important;
+}
+.docs-massage-card .docs-course-massage{
+    color: #c2410c !important;
+}
+</style>
+
 </head>
 <body>
 <div class="wrapper">
@@ -8551,9 +8568,8 @@ body{padding-bottom:98px!important;}
 <div class="docs-card-body">
 <div class="docs-card-headline">
 <div class="docs-badge">
-    เอกสารประกอบการรายงานตัว
-    <span class="docs-general-highlight">(วิชาทั่วไป)</span>
-</div>
+                            เอกสารประกอบการรายงานตัว <span class="docs-course-label docs-course-general">(วิชาทั่วไป)</span>
+                        </div>
 
 <ul class="docs-list">
 <li>รูปถ่ายหน้าตรง ไม่สวมหมวก/แว่นดำ ขนาด 1–2 นิ้ว จำนวน 2 รูป</li>
@@ -8570,7 +8586,7 @@ body{padding-bottom:98px!important;}
 <div class="docs-card-body">
 <div class="docs-card-headline">
 <div class="docs-badge">
-                            เอกสารประกอบการรายงานตัว(วิชานวด)
+                            เอกสารประกอบการรายงานตัว <span class="docs-course-label docs-course-massage">(วิชานวด)</span>
                         </div>
 
 <ul class="docs-list">
@@ -9601,78 +9617,24 @@ function startRemoteContentLoading() {
         DTCP_AUTO_UPDATE_MS
     );
 
-    // เมื่อกลับมาที่แท็บ ให้ตรวจข้อมูลทันที ไม่ต้องรอรอบ 30 วินาที
+    // เมื่อกลับมาที่แท็บ ให้ตรวจข้อมูลใหม่ แต่ throttle 30 วินาที
+    // ป้องกันการสลับแท็บถี่ ๆ แล้วยิง WebSettings + Outreach ซ้ำ
+    let lastRemoteVisibilityRefresh = 0;
     document.addEventListener('visibilitychange', function () {
-        if (!document.hidden) {
-            refreshAutoUpdateContent();
-        }
+        if (document.hidden) return;
+        const now = Date.now();
+        if (now - lastRemoteVisibilityRefresh < 30000) return;
+        lastRemoteVisibilityRefresh = now;
+        refreshAutoUpdateContent();
     });
 }
 
 /* =========================================================
-   IMAGE RELIABILITY FIX - GitHub Pages / Google Sheets / Local HTML
+   IMAGE RELIABILITY CLEANUP · 2026-09-28
+   Removed legacy duplicate image observer.
+   The single DTCP IMAGE RELIABILITY PATCH near the end of this file is the
+   authoritative image recovery layer for static + dynamic images.
    ========================================================= */
-(function installImageReliabilityFix(){
-    const GH_BASE = 'https://chatuchakdatacenter-wq.github.io/chatuchak-dtcp/';
-
-    function resolveImageSource(src){
-        if (!src) return '';
-        let value = String(src).trim();
-        if (!value || /^data:/i.test(value) || /^blob:/i.test(value)) return value;
-
-        if (!/^(https?:)?\/\//i.test(value)) {
-            value = value.replace(/^\.\//,'').replace(/^\//,'');
-            return GH_BASE + value;
-        }
-
-        return value.replace(
-            'https://github.com/chatuchakdatacenter-wq/chatuchak-dtcp/blob/main/',
-            GH_BASE
-        ).replace(
-            'https://raw.githubusercontent.com/chatuchakdatacenter-wq/chatuchak-dtcp/main/',
-            GH_BASE
-        );
-    }
-
-    function fixImages(root=document){
-        root.querySelectorAll('img[src]').forEach(img => {
-            const original = img.getAttribute('src');
-            const resolved = resolveImageSource(original);
-            if (resolved && resolved !== original) img.setAttribute('src', resolved);
-
-            if (!img.dataset.imageFixInstalled) {
-                img.dataset.imageFixInstalled = '1';
-                img.addEventListener('error', function(){
-                    const current = this.getAttribute('src') || '';
-                    if (this.dataset.imageFallbackTried === '1') return;
-                    const fallback = resolveImageSource(original);
-                    if (fallback && fallback !== current) {
-                        this.dataset.imageFallbackTried = '1';
-                        this.src = fallback;
-                    }
-                }, {once:false});
-            }
-        });
-    }
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => fixImages(), {once:true});
-    } else {
-        fixImages();
-    }
-
-    const observer = new MutationObserver(mutations => {
-        mutations.forEach(m => m.addedNodes.forEach(node => {
-            if (node.nodeType !== 1) return;
-            if (node.tagName === 'IMG') {
-                fixImages(node.parentElement || document);
-            } else if (node.querySelector && node.querySelector('img')) {
-                fixImages(node);
-            }
-        }));
-    });
-    observer.observe(document.documentElement, {childList:true, subtree:true});
-})();
 
 // HYBRID STARTUP 2026-09-22:
 // Critical/lightweight content (HOT + PR) starts at DOMContentLoaded.
@@ -11492,15 +11454,25 @@ document.addEventListener('keydown',e=>{
     if(e.key==='ArrowRight') stepDailyLearningLightbox(1);
 });
 
+let dailyLearningSyncTimer = null;
+
 function startDailyLearningBackgroundSync(){
-    // DAILY LEARNING RELIABILITY FIX 2026-09-22:
-    // Do not wait for window.load. A slow/broken image elsewhere can delay that
-    // event and prevent Daily Learning from starting at all. Start from DOM ready
-    // instead, while retaining the stagger so PR/HOT can load first.
+    // STABILITY PHASE 2 · 2026-09-28
+    // Main remote cycle starts at 0s/120s: WebSettings, then Outreach +0.9s.
+    // Daily Learning is deliberately phase-shifted to +6s and then every 120s
+    // from that point, preventing the heavier services from waking together.
+    if (dailyLearningSyncTimer) {
+        clearInterval(dailyLearningSyncTimer);
+        dailyLearningSyncTimer = null;
+    }
+
     window.setTimeout(()=>{
         if(!document.hidden) loadDailyLearning();
-    }, 4500);
-    window.setInterval(()=>{if(!document.hidden) loadDailyLearning();},120000);
+
+        dailyLearningSyncTimer = window.setInterval(()=>{
+            if(!document.hidden) loadDailyLearning();
+        },120000);
+    },6000);
 }
 if(document.readyState==='loading'){
     document.addEventListener('DOMContentLoaded',startDailyLearningBackgroundSync,{once:true});
@@ -11795,7 +11767,7 @@ if(document.readyState==='loading'){
         }
         [title,reactionTitle].forEach(el=>{if(!el)return;el.style.cursor='pointer';el.addEventListener('click',refreshVisitorAndReactions);});
         let lastRefresh=0;
-        document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible')return;const now=Date.now();if(now-lastRefresh<30000)return;lastRefresh=now;refreshVisitorAndReactions();});
+        document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible')return;const now=Date.now();if(now-lastRefresh<30000)return;lastRefresh=now;window.setTimeout(()=>{if(document.visibilityState==='visible')refreshVisitorAndReactions();},3000);});
     }
     if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
 })();
